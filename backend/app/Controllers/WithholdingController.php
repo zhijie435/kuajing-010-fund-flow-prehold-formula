@@ -98,23 +98,37 @@ class WithholdingController
 
         $formulaCode = $input['formula_code'] ?? '';
         $variables = $input['variables'] ?? [];
+        $operator = $input['operator'] ?? '';
         $initialStatus = (int)($input['initial_status'] ?? WithholdingDetail::STATUS_COMPLETED);
         $options = [
             'order_no' => $input['order_no'] ?? null,
             'related_type' => $input['related_type'] ?? null,
             'related_id' => $input['related_id'] ?? null,
-            'operator' => $input['operator'] ?? 'admin',
+            'operator' => $operator ?: 'admin',
             'remark' => $input['remark'] ?? null,
             'record' => true,
             'initial_status' => $initialStatus
         ];
 
         if (empty($formulaCode)) {
-            return $this->router->error('公式编码不能为空');
+            return $this->router->error('公式编码不能为空', 1, 400, [
+                'error_code' => 'FORMULA_CODE_EMPTY',
+                'error_detail' => 'formula_code is required'
+            ]);
         }
 
         if (!is_array($variables)) {
-            return $this->router->error('变量参数格式错误');
+            return $this->router->error('变量参数格式错误', 1, 400, [
+                'error_code' => 'VARIABLES_INVALID',
+                'error_detail' => 'variables must be an array'
+            ]);
+        }
+
+        if (empty($operator)) {
+            return $this->router->error('操作人不能为空', 1, 400, [
+                'error_code' => 'OPERATOR_EMPTY',
+                'error_detail' => 'operator is required'
+            ]);
         }
 
         try {
@@ -141,6 +155,7 @@ class WithholdingController
         } catch (\Exception $e) {
             return $this->router->error('计算失败: ' . $e->getMessage(), 1, 400, [
                 'rolled_back' => true,
+                'error_code' => 'CALCULATE_EXCEPTION',
                 'error_detail' => $e->getMessage()
             ]);
         }
@@ -154,18 +169,27 @@ class WithholdingController
         $variables = $input['variables'] ?? [];
 
         if (empty($formulaCode)) {
-            return $this->router->error('公式编码不能为空');
+            return $this->router->error('公式编码不能为空', 1, 400, [
+                'error_code' => 'FORMULA_CODE_EMPTY',
+                'error_detail' => 'formula_code is required'
+            ]);
         }
 
         if (!is_array($variables)) {
-            return $this->router->error('变量参数格式错误');
+            return $this->router->error('变量参数格式错误', 1, 400, [
+                'error_code' => 'VARIABLES_INVALID',
+                'error_detail' => 'variables must be an array'
+            ]);
         }
 
         try {
             $result = $this->calculator->preview($formulaCode, $variables);
             return $this->router->success($result, '预览成功');
         } catch (\Exception $e) {
-            return $this->router->error('预览失败: ' . $e->getMessage());
+            return $this->router->error('预览失败: ' . $e->getMessage(), 1, 400, [
+                'error_code' => 'PREVIEW_EXCEPTION',
+                'error_detail' => $e->getMessage()
+            ]);
         }
     }
 
