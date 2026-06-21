@@ -3,13 +3,16 @@
 namespace App\Controllers;
 
 use App\Services\Router;
+use App\Services\ControllerHelper;
 use App\Services\WithholdingCalculator;
 use App\Models\WithholdingDetail;
 use App\Models\FundFlow;
 use App\Models\OperationLog;
+use App\Exceptions\FormulaException;
 
 class WithholdingController
 {
+    use ControllerHelper;
     private $calculator;
     private $router;
     private $detailModel;
@@ -61,35 +64,7 @@ class WithholdingController
 
     private function getAvailableDetailStatuses(int $currentStatus): array
     {
-        $statuses = [];
-        $allStatuses = $this->detailModel->getStatusTypes();
-        foreach ($allStatuses as $value => $label) {
-            if ($this->detailModel->canTransitionTo($currentStatus, $value)) {
-                $statuses[] = [
-                    'value' => $value,
-                    'label' => $label,
-                    'description' => $this->detailModel->getStatusDescription($value)
-                ];
-            }
-        }
-        return $statuses;
-    }
-
-    private function enrichLogs(array $logs): array
-    {
-        foreach ($logs as &$log) {
-            $log['action_label'] = $this->operationLog->getActionLabel($log['action']);
-            if (!empty($log['old_value'])) {
-                $log['old_value'] = json_decode($log['old_value'], true);
-            }
-            if (!empty($log['new_value'])) {
-                $log['new_value'] = json_decode($log['new_value'], true);
-            }
-            if (!empty($log['extra'])) {
-                $log['extra'] = json_decode($log['extra'], true);
-            }
-        }
-        return $logs;
+        return $this->getAvailableStatuses($this->detailModel, $currentStatus);
     }
 
     public function calculate()
@@ -152,6 +127,22 @@ class WithholdingController
             }
 
             return $this->router->success($result, '计算成功');
+        } catch (FormulaException $e) {
+            $errorMap = [
+                FormulaException::CODE_NOT_FOUND => ['FORMULA_NOT_FOUND', 404],
+                FormulaException::CODE_INACTIVE => ['FORMULA_INACTIVE', 400],
+                FormulaException::CODE_INVALID_VARIABLE => ['VARIABLE_INVALID', 400],
+                FormulaException::CODE_EVALUATION_ERROR => ['EVALUATION_ERROR', 400],
+                FormulaException::CODE_UNSAFE => ['FORMULA_UNSAFE', 400],
+                FormulaException::CODE_NEGATIVE_RESULT => ['NEGATIVE_RESULT', 400],
+                FormulaException::CODE_RECORD_FAILED => ['RECORD_FAILED', 500],
+            ];
+            [$errorCode, $statusCode] = $errorMap[$e->getErrorCode()] ?? ['CALCULATE_EXCEPTION', 400];
+            return $this->router->error('计算失败: ' . $e->getMessage(), 1, $statusCode, [
+                'rolled_back' => true,
+                'error_code' => $errorCode,
+                'error_detail' => $e->getMessage()
+            ]);
         } catch (\Exception $e) {
             return $this->router->error('计算失败: ' . $e->getMessage(), 1, 400, [
                 'rolled_back' => true,
@@ -185,6 +176,20 @@ class WithholdingController
         try {
             $result = $this->calculator->preview($formulaCode, $variables);
             return $this->router->success($result, '预览成功');
+        } catch (FormulaException $e) {
+            $errorMap = [
+                FormulaException::CODE_NOT_FOUND => ['FORMULA_NOT_FOUND', 404],
+                FormulaException::CODE_INACTIVE => ['FORMULA_INACTIVE', 400],
+                FormulaException::CODE_INVALID_VARIABLE => ['VARIABLE_INVALID', 400],
+                FormulaException::CODE_EVALUATION_ERROR => ['EVALUATION_ERROR', 400],
+                FormulaException::CODE_UNSAFE => ['FORMULA_UNSAFE', 400],
+                FormulaException::CODE_NEGATIVE_RESULT => ['NEGATIVE_RESULT', 400],
+            ];
+            [$errorCode, $statusCode] = $errorMap[$e->getErrorCode()] ?? ['PREVIEW_EXCEPTION', 400];
+            return $this->router->error('预览失败: ' . $e->getMessage(), 1, $statusCode, [
+                'error_code' => $errorCode,
+                'error_detail' => $e->getMessage()
+            ]);
         } catch (\Exception $e) {
             return $this->router->error('预览失败: ' . $e->getMessage(), 1, 400, [
                 'error_code' => 'PREVIEW_EXCEPTION',
@@ -206,119 +211,128 @@ class WithholdingController
             ]);
         }
 
-        $results = [];
-        $db = $this->calculator->getFormulaModel()->getDb();
-
-        try {
-            $db->beginTransaction();
-
-            foreach ($items as $index => $item) {
-                $formulaCode = $item['formula_code'] ?? '';
-                $variables = $item['variables'] ?? [];
-                $operator = $item['operator'] ?? '';
-                $initialStatus = (int)($item['initial_status'] ?? WithholdingDetail::STATUS_COMPLETED);
-
-                if (empty($formulaCode) || empty($operator)) {
-                    $results[] = [
-                        'index' => $index,
-                        'success' => false,
-                        'error' => empty($formulaCode) ? '公式编码不能为空' : '操作人不能为空',
-                        'error_code' => empty($formulaCode) ? 'FORMULA_CODE_EMPTY' : 'OPERATOR_EMPTY'
-                    ];
-                    continue;
-                }
-
-                if (!is_array($variables)) {
-                    $results[] = [
-                        'index' => $index,
-                        'success' => false,
-                        'error' => '变量参数格式错误',
-                        'error_code' => 'VARIABLES_INVALID'
-                    ];
-                    continue;
-                }
-
-                $options = [
-                    'order_no' => $item['order_no'] ?? null,
-                    'related_type' => $item['related_type'] ?? null,
-                    'related_id' => $item['related_id'] ?? null,
-                    'operator' => $operator,
-                    'remark' => $item['remark'] ?? null,
-                    'record' => true,
-                    'initial_status' => $initialStatus
-                ];
-
-                try {
-                    $result = $this->calculator->calculate($formulaCode, $variables, $options);
-
-                    if (!empty($result['detail_id'])) {
-                        $this->operationLog->log(
-                            OperationLog::TARGET_WITHHOLDING_DETAIL,
-                            (int)$result['detail_id'],
-                            OperationLog::ACTION_CREATE,
-                            [
-                                'operator' => $options['operator'],
-                                'remark' => '批量创建预扣明细',
-                                'new_value' => [
-                                    'formula_code' => $formulaCode,
-                                    'result' => round($result['result'], 2),
-                                    'batch_index' => $index,
-                                    'initial_status' => $initialStatus
-                                ]
-                            ]
-                        );
-                    }
-
-                    $results[] = [
-                        'index' => $index,
-                        'success' => true,
-                        'data' => $result
-                    ];
-                } catch (\Exception $e) {
-                    $results[] = [
-                        'index' => $index,
-                        'success' => false,
-                        'error' => $e->getMessage(),
-                        'error_code' => 'CALCULATE_EXCEPTION'
-                    ];
-                }
-            }
-
-            $db->commit();
-
-            $successCount = count(array_filter($results, fn($r) => $r['success']));
-            $failCount = count($results) - $successCount;
-
-            return $this->router->success([
-                'results' => $results,
-                'summary' => [
-                    'total' => count($results),
-                    'success' => $successCount,
-                    'failed' => $failCount
-                ]
-            ], $failCount > 0 ? "部分计算失败: 成功{$successCount}条, 失败{$failCount}条" : '批量计算成功');
-
-        } catch (\Exception $e) {
-            $db->rollBack();
-            return $this->router->error('批量计算失败: ' . $e->getMessage(), 1, 400, [
-                'rolled_back' => true,
-                'error_code' => 'BATCH_TRANSACTION_EXCEPTION',
-                'error_detail' => $e->getMessage()
+        if (count($items) > 100) {
+            return $this->router->error('批量计算单次最多100条', 1, 400, [
+                'error_code' => 'BATCH_ITEMS_TOO_MANY',
+                'max_items' => 100
             ]);
         }
+
+        $results = [];
+
+        foreach ($items as $index => $item) {
+            $formulaCode = $item['formula_code'] ?? '';
+            $variables = $item['variables'] ?? [];
+            $operator = $item['operator'] ?? '';
+            $initialStatus = (int)($item['initial_status'] ?? WithholdingDetail::STATUS_COMPLETED);
+
+            if (empty($formulaCode) || empty($operator)) {
+                $results[] = [
+                    'index' => $index,
+                    'success' => false,
+                    'error' => empty($formulaCode) ? '公式编码不能为空' : '操作人不能为空',
+                    'error_code' => empty($formulaCode) ? 'FORMULA_CODE_EMPTY' : 'OPERATOR_EMPTY'
+                ];
+                continue;
+            }
+
+            if (!is_array($variables)) {
+                $results[] = [
+                    'index' => $index,
+                    'success' => false,
+                    'error' => '变量参数格式错误',
+                    'error_code' => 'VARIABLES_INVALID'
+                ];
+                continue;
+            }
+
+            $options = [
+                'order_no' => $item['order_no'] ?? null,
+                'related_type' => $item['related_type'] ?? null,
+                'related_id' => $item['related_id'] ?? null,
+                'operator' => $operator,
+                'remark' => $item['remark'] ?? null,
+                'record' => true,
+                'initial_status' => $initialStatus
+            ];
+
+            try {
+                $result = $this->calculator->calculate($formulaCode, $variables, $options);
+
+                if (!empty($result['detail_id'])) {
+                    $this->operationLog->log(
+                        OperationLog::TARGET_WITHHOLDING_DETAIL,
+                        (int)$result['detail_id'],
+                        OperationLog::ACTION_CREATE,
+                        [
+                            'operator' => $options['operator'],
+                            'remark' => '批量创建预扣明细',
+                            'new_value' => [
+                                'formula_code' => $formulaCode,
+                                'result' => round($result['result'], 2),
+                                'batch_index' => $index,
+                                'initial_status' => $initialStatus
+                            ]
+                        ]
+                    );
+                }
+
+                $results[] = [
+                    'index' => $index,
+                    'success' => true,
+                    'data' => $result
+                ];
+            } catch (FormulaException $e) {
+                $formulaErrorMap = [
+                    FormulaException::CODE_NOT_FOUND => 'FORMULA_NOT_FOUND',
+                    FormulaException::CODE_INACTIVE => 'FORMULA_INACTIVE',
+                    FormulaException::CODE_INVALID_VARIABLE => 'VARIABLE_INVALID',
+                    FormulaException::CODE_EVALUATION_ERROR => 'EVALUATION_ERROR',
+                    FormulaException::CODE_UNSAFE => 'FORMULA_UNSAFE',
+                    FormulaException::CODE_NEGATIVE_RESULT => 'NEGATIVE_RESULT',
+                    FormulaException::CODE_RECORD_FAILED => 'RECORD_FAILED',
+                ];
+                $results[] = [
+                    'index' => $index,
+                    'success' => false,
+                    'error' => $e->getMessage(),
+                    'error_code' => $formulaErrorMap[$e->getErrorCode()] ?? 'CALCULATE_EXCEPTION'
+                ];
+            } catch (\Exception $e) {
+                $results[] = [
+                    'index' => $index,
+                    'success' => false,
+                    'error' => $e->getMessage(),
+                    'error_code' => 'CALCULATE_EXCEPTION'
+                ];
+            }
+        }
+
+        $successCount = count(array_filter($results, fn($r) => $r['success']));
+        $failCount = count($results) - $successCount;
+
+        return $this->router->success([
+            'results' => $results,
+            'summary' => [
+                'total' => count($results),
+                'success' => $successCount,
+                'failed' => $failCount
+            ]
+        ], $failCount > 0 ? "部分计算失败: 成功{$successCount}条, 失败{$failCount}条" : '批量计算成功');
     }
 
     public function details()
     {
         $input = $this->router->getInput();
-        $page = (int)($input['page'] ?? 1);
-        $perPage = (int)($input['per_page'] ?? 20);
+        $page = max(1, (int)($input['page'] ?? 1));
+        $perPage = min(100, max(1, (int)($input['per_page'] ?? 20)));
         $formulaId = $input['formula_id'] ?? null;
         $formulaCode = $input['formula_code'] ?? null;
         $orderNo = $input['order_no'] ?? null;
         $status = $input['status'] ?? null;
         $relatedType = $input['related_type'] ?? null;
         $relatedId = $input['related_id'] ?? null;
+        $keyword = $input['keyword'] ?? null;
 
         $conditions = [];
 
@@ -332,7 +346,15 @@ class WithholdingController
             $conditions['order_no'] = $orderNo;
         }
         if ($status !== null && $status !== '') {
-            $conditions['status'] = (int)$status;
+            $validStatuses = array_keys($this->detailModel->getStatusTypes());
+            $statusVal = (int)$status;
+            if (!in_array($statusVal, $validStatuses, true)) {
+                return $this->router->error('无效的状态值', 1, 400, [
+                    'error_code' => 'INVALID_STATUS',
+                    'allowed_statuses' => $validStatuses
+                ]);
+            }
+            $conditions['status'] = $statusVal;
         }
         if ($relatedType && $relatedId) {
             $result = $this->detailModel->getByRelated($relatedType, (int)$relatedId);
@@ -472,9 +494,9 @@ class WithholdingController
                 $updatedFlowIds[] = $flowId;
             }
 
-            if ($totalBalanceAdjust !== 0.0 && !empty($updatedFlowIds)) {
+            if (abs($totalBalanceAdjust) > 0.001 && !empty($updatedFlowIds)) {
                 $minUpdatedId = min($updatedFlowIds);
-                $adjustSql = "UPDATE fund_flows SET balance = balance + ? WHERE id > ?";
+                $adjustSql = "UPDATE fund_flows SET balance = ROUND(balance + ?, 2) WHERE id > ?";
                 $db->query($adjustSql, [round($totalBalanceAdjust, 2), $minUpdatedId]);
             }
 
@@ -518,7 +540,11 @@ class WithholdingController
 
         } catch (\Exception $e) {
             $db->rollBack();
-            return $this->router->error('状态变更失败: ' . $e->getMessage());
+            return $this->router->error('状态变更失败: ' . $e->getMessage(), 1, 400, [
+                'rolled_back' => true,
+                'error_code' => 'STATUS_CHANGE_EXCEPTION',
+                'error_detail' => $e->getMessage()
+            ]);
         }
     }
 
@@ -530,12 +556,18 @@ class WithholdingController
         $operator = $input['operator'] ?? 'admin';
 
         if (empty($remark)) {
-            return $this->router->error('备注内容不能为空');
+            return $this->router->error('备注内容不能为空', 1, 400, [
+                'error_code' => 'REMARK_EMPTY',
+                'error_detail' => 'remark is required'
+            ]);
         }
 
         $detail = $this->detailModel->find($id);
         if (!$detail) {
-            return $this->router->error('预扣明细不存在', 404, 404);
+            return $this->router->error('预扣明细不存在', 404, 404, [
+                'error_code' => 'NOT_FOUND',
+                'error_detail' => 'withholding detail not found'
+            ]);
         }
 
         $oldRemark = $detail['remark'] ?? '';
@@ -569,7 +601,11 @@ class WithholdingController
 
         } catch (\Exception $e) {
             $db->rollBack();
-            return $this->router->error('备注添加失败: ' . $e->getMessage());
+            return $this->router->error('备注添加失败: ' . $e->getMessage(), 1, 400, [
+                'rolled_back' => true,
+                'error_code' => 'REMARK_EXCEPTION',
+                'error_detail' => $e->getMessage()
+            ]);
         }
     }
 
@@ -610,6 +646,27 @@ class WithholdingController
     {
         return $this->router->success([
             'status_types' => $this->detailModel->getStatusTypes()
+        ]);
+    }
+
+    public function stats()
+    {
+        $db = $this->detailModel->getDb();
+
+        $statsSql = "SELECT
+            COUNT(*) as total_count,
+            COALESCE(SUM(result), 0) as total_amount,
+            SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END) as completed_count,
+            SUM(CASE WHEN status = 0 THEN 1 ELSE 0 END) as pending_count
+            FROM withholding_details";
+
+        $stats = $db->fetch($statsSql);
+
+        return $this->router->success([
+            'total_count' => (int)($stats['total_count'] ?? 0),
+            'total_amount' => round((float)($stats['total_amount'] ?? 0), 2),
+            'completed_count' => (int)($stats['completed_count'] ?? 0),
+            'pending_count' => (int)($stats['pending_count'] ?? 0)
         ]);
     }
 }

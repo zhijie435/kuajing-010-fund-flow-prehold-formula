@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\WithholdingFormula;
 use App\Models\WithholdingDetail;
 use App\Models\FundFlow;
+use App\Exceptions\FormulaException;
 
 class WithholdingCalculator
 {
@@ -22,37 +23,49 @@ class WithholdingCalculator
     public function calculate(string $formulaCode, array $variables, array $options = []): array
     {
         $formula = $this->formulaModel->findByCode($formulaCode);
-        
+
         if (!$formula) {
-            throw new \Exception("Formula with code '$formulaCode' not found");
+            throw FormulaException::notFound($formulaCode);
         }
-        
-        if ($formula['status'] != 1) {
-            throw new \Exception("Formula '$formulaCode' is not active");
+
+        if ((int)$formula['status'] !== 1) {
+            throw FormulaException::inactive($formulaCode);
         }
-        
+
         $formulaVariables = json_decode($formula['variables'], true) ?: [];
         $processedVariables = $this->processVariables($formulaVariables, $variables);
-        
+
         $result = $this->evaluateFormula($formula['formula'], $processedVariables);
-        
+
+        if ($result < 0) {
+            throw FormulaException::negativeResult($result);
+        }
+
         $shouldRecord = $options['record'] ?? true;
         $detailId = null;
-        
+
         if ($shouldRecord) {
             $db = $this->formulaModel->getDb();
             $db->beginTransaction();
-            
+
             try {
                 $detailId = $this->recordDetail($formula, $processedVariables, $result, $options);
-                $this->recordFundFlow($formula, $result, $detailId, $options);
+                if ($detailId <= 0) {
+                    throw FormulaException::recordFailed('预扣明细创建返回无效ID');
+                }
+
+                $flowId = $this->recordFundFlow($formula, $result, $detailId, $options);
+                if ($flowId <= 0) {
+                    throw FormulaException::recordFailed('资金流水创建返回无效ID');
+                }
+
                 $db->commit();
             } catch (\Exception $e) {
                 $db->rollBack();
                 throw $e;
             }
         }
-        
+
         return [
             'formula_id' => $formula['id'],
             'formula_code' => $formula['code'],
@@ -73,34 +86,37 @@ class WithholdingCalculator
     public function validateFormula(string $formula, array $variables): array
     {
         $errors = [];
-        
+
         if (empty($formula)) {
             $errors[] = '公式不能为空';
         }
-        
+
         if (!$this->checkFormulaSecurity($formula)) {
             $errors[] = '公式包含非法字符或函数';
         }
-        
+
         $extractedVars = $this->extractVariables($formula);
         $varNames = array_column($variables, 'name');
-        
+
         $missingVars = array_diff($extractedVars, $varNames);
         if (!empty($missingVars)) {
             $errors[] = '公式中存在未定义的变量: ' . implode(', ', $missingVars);
         }
-        
+
         $testVars = [];
         foreach ($variables as $var) {
             $testVars[$var['name']] = $var['default'] ?? 100;
         }
-        
+
         try {
-            $this->evaluateFormula($formula, $testVars);
+            $result = $this->evaluateFormula($formula, $testVars);
+            if ($result < 0) {
+                $errors[] = '公式计算结果为负数 (' . round($result, 2) . ')，预扣金额不允许为负';
+            }
         } catch (\Exception $e) {
             $errors[] = '公式计算错误: ' . $e->getMessage();
         }
-        
+
         return [
             'valid' => empty($errors),
             'errors' => $errors,
@@ -111,59 +127,58 @@ class WithholdingCalculator
     private function processVariables(array $definedVars, array $inputVars): array
     {
         $processed = [];
-        
+        $missing = [];
+
         foreach ($definedVars as $defVar) {
             $name = $defVar['name'];
+            $isRequired = !array_key_exists('default', $defVar) || $defVar['default'] === null || $defVar['default'] === '';
             $default = $defVar['default'] ?? 0;
-            $value = $inputVars[$name] ?? $default;
-            
-            if (!is_numeric($value)) {
-                throw new \Exception("Variable '$name' must be numeric");
+
+            if (!array_key_exists($name, $inputVars) || $inputVars[$name] === null || $inputVars[$name] === '') {
+                if ($isRequired) {
+                    $missing[] = $name;
+                    continue;
+                }
+                $value = $default;
+            } else {
+                $value = $inputVars[$name];
             }
-            
+
+            if (!is_numeric($value)) {
+                throw FormulaException::invalidVariable($name);
+            }
+
             $processed[$name] = (float)$value;
         }
-        
+
+        if (!empty($missing)) {
+            throw FormulaException::missingVariables($missing);
+        }
+
         return $processed;
     }
 
     private function evaluateFormula(string $formula, array $variables): float
     {
         if (!$this->checkFormulaSecurity($formula)) {
-            throw new \Exception('Formula contains unsafe code');
+            throw FormulaException::unsafe();
         }
-        
-        $replacements = [];
-        foreach ($variables as $name => $value) {
-            $replacements['#' . $name . '#'] = (float)$value;
-        }
-        
-        $expression = strtr($formula, $this->buildVariablePlaceholders($variables));
-        
+
         $expression = preg_replace_callback('/\b([a-zA-Z_][a-zA-Z0-9_]*)\b/', function($matches) use ($variables) {
             $varName = $matches[1];
             if (array_key_exists($varName, $variables)) {
                 return (float)$variables[$varName];
             }
-            throw new \Exception("Undefined variable: $varName");
-        }, $expression);
-        
-        $result = $this->safeEval($expression);
-        
-        if (!is_numeric($result)) {
-            throw new \Exception('Formula evaluation did not return a numeric result');
-        }
-        
-        return (float)$result;
-    }
+            throw FormulaException::evaluationError("未定义变量: {$varName}");
+        }, $formula);
 
-    private function buildVariablePlaceholders(array $variables): array
-    {
-        $placeholders = [];
-        foreach ($variables as $name => $value) {
-            $placeholders['/' . '\b' . preg_quote($name, '/') . '\b' . '/'] = (float)$value;
+        $result = $this->safeEval($expression);
+
+        if (!is_numeric($result)) {
+            throw FormulaException::evaluationError('计算结果不是有效数值');
         }
-        return $placeholders;
+
+        return (float)$result;
     }
 
     private function safeEval(string $expression): float
@@ -176,21 +191,25 @@ class WithholdingCalculator
             'whitespace' => '\s',
             'ternary' => '\?:'
         ];
-        
+
         $pattern = '/[^' . implode('', $allowedPatterns) . ']/';
         if (preg_match($pattern, $expression)) {
-            throw new \Exception('Expression contains invalid characters');
+            throw FormulaException::evaluationError('表达式包含非法字符');
         }
-        
+
         $result = null;
         $code = '$result = ' . $expression . ';';
-        
+
         try {
             eval($code);
         } catch (\Throwable $e) {
-            throw new \Exception('Formula evaluation error: ' . $e->getMessage());
+            throw FormulaException::evaluationError($e->getMessage());
         }
-        
+
+        if ($result === null) {
+            throw FormulaException::evaluationError('表达式求值返回空值');
+        }
+
         return (float)$result;
     }
 
@@ -201,7 +220,7 @@ class WithholdingCalculator
             '/\b(eval|assert|create_function)\s*\(/i',
             '/\b(include|require|include_once|require_once)\s*[\(\/]/i',
             '/\$\{/',
-            '/\$\_/',
+            '/\$_/',
             '/new\s+/i',
             '/->/',
             '/::/',
@@ -210,13 +229,13 @@ class WithholdingCalculator
             '/\b(fopen|fwrite|file_put_contents|file_get_contents)\s*\(/i',
             '/\b(curl|fsockopen|pfsockopen)\s*\(/i'
         ];
-        
+
         foreach ($dangerousPatterns as $pattern) {
             if (preg_match($pattern, $formula)) {
                 return false;
             }
         }
-        
+
         return true;
     }
 
@@ -231,7 +250,7 @@ class WithholdingCalculator
     private function recordDetail(array $formula, array $variables, float $result, array $options): int
     {
         $initialStatus = $options['initial_status'] ?? WithholdingDetail::STATUS_COMPLETED;
-        
+
         $detailData = [
             'formula_id' => $formula['id'],
             'formula_code' => $formula['code'],
@@ -246,22 +265,22 @@ class WithholdingCalculator
             'remark' => $options['remark'] ?? null,
             'status' => $initialStatus
         ];
-        
+
         return $this->detailModel->create($detailData);
     }
 
     private function recordFundFlow(array $formula, float $result, int $detailId, array $options): int
     {
         $initialStatus = $options['initial_status'] ?? FundFlow::STATUS_COMPLETED;
-        
+
         $latestBalance = $this->fundFlowModel->getLatestBalance();
-        
+
         if ($initialStatus === FundFlow::STATUS_COMPLETED) {
-            $newBalance = $latestBalance - $result;
+            $newBalance = round($latestBalance - $result, 2);
         } else {
-            $newBalance = $latestBalance;
+            $newBalance = round($latestBalance, 2);
         }
-        
+
         $flowData = [
             'flow_no' => $this->fundFlowModel->generateFlowNo(),
             'flow_type' => FundFlow::TYPE_WITHHOLD,
@@ -277,7 +296,7 @@ class WithholdingCalculator
             'remark' => $options['remark'] ?? ('预扣: ' . $formula['name']),
             'status' => $initialStatus
         ];
-        
+
         return $this->fundFlowModel->create($flowData);
     }
 

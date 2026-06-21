@@ -3,12 +3,14 @@
 namespace App\Controllers;
 
 use App\Services\Router;
+use App\Services\ControllerHelper;
 use App\Models\FundFlow;
 use App\Models\OperationLog;
 use App\Services\WithholdingCalculator;
 
 class FundFlowController
 {
+    use ControllerHelper;
     private $model;
     private $calculator;
     private $router;
@@ -38,44 +40,16 @@ class FundFlowController
         return array_map([$this, 'enrichFlow'], $flows);
     }
 
-    private function getAvailableStatuses(int $currentStatus): array
+    private function getAvailableFlowStatuses(int $currentStatus): array
     {
-        $statuses = [];
-        $allStatuses = $this->model->getStatusTypes();
-        foreach ($allStatuses as $value => $label) {
-            if ($this->model->canTransitionTo($currentStatus, $value)) {
-                $statuses[] = [
-                    'value' => $value,
-                    'label' => $label,
-                    'description' => $this->model->getStatusDescription($value)
-                ];
-            }
-        }
-        return $statuses;
-    }
-
-    private function enrichLogs(array $logs): array
-    {
-        foreach ($logs as &$log) {
-            $log['action_label'] = $this->operationLog->getActionLabel($log['action']);
-            if (!empty($log['old_value'])) {
-                $log['old_value'] = json_decode($log['old_value'], true);
-            }
-            if (!empty($log['new_value'])) {
-                $log['new_value'] = json_decode($log['new_value'], true);
-            }
-            if (!empty($log['extra'])) {
-                $log['extra'] = json_decode($log['extra'], true);
-            }
-        }
-        return $logs;
+        return $this->getAvailableStatuses($this->model, $currentStatus);
     }
 
     public function index()
     {
         $input = $this->router->getInput();
-        $page = (int)($input['page'] ?? 1);
-        $perPage = (int)($input['per_page'] ?? 20);
+        $page = max(1, (int)($input['page'] ?? 1));
+        $perPage = min(100, max(1, (int)($input['per_page'] ?? 20)));
         $flowType = $input['flow_type'] ?? null;
         $direction = $input['direction'] ?? null;
         $status = $input['status'] ?? null;
@@ -85,6 +59,17 @@ class FundFlowController
         $withholdingDetailId = $input['withholding_detail_id'] ?? null;
         $startDate = $input['start_date'] ?? null;
         $endDate = $input['end_date'] ?? null;
+        $keyword = $input['keyword'] ?? null;
+        $minAmount = $input['min_amount'] ?? null;
+        $maxAmount = $input['max_amount'] ?? null;
+
+        $allowedFlowTypes = array_keys($this->model->getFlowTypes());
+        if ($flowType && !in_array($flowType, $allowedFlowTypes, true)) {
+            return $this->router->error('不支持的流水类型: ' . $flowType, 1, 400, [
+                'error_code' => 'INVALID_FLOW_TYPE',
+                'allowed_types' => $allowedFlowTypes
+            ]);
+        }
 
         $conditions = [];
 
@@ -92,7 +77,13 @@ class FundFlowController
             $conditions['flow_type'] = $flowType;
         }
         if ($direction !== null && $direction !== '') {
-            $conditions['direction'] = (int)$direction;
+            $dirVal = (int)$direction;
+            if (!in_array($dirVal, [FundFlow::DIRECTION_IN, FundFlow::DIRECTION_OUT], true)) {
+                return $this->router->error('资金方向参数错误', 1, 400, [
+                    'error_code' => 'INVALID_DIRECTION'
+                ]);
+            }
+            $conditions['direction'] = $dirVal;
         }
         if ($status !== null && $status !== '') {
             $conditions['status'] = (int)$status;
@@ -125,6 +116,22 @@ class FundFlowController
                 $whereParts[] = "$column = ?";
                 $params[] = $value;
             }
+        }
+
+        if ($keyword) {
+            $escapedKeyword = '%' . addcslashes($keyword, '%_') . '%';
+            $whereParts[] = "(flow_no LIKE ? OR order_no LIKE ?)";
+            $params[] = $escapedKeyword;
+            $params[] = $escapedKeyword;
+        }
+
+        if ($minAmount !== null && is_numeric($minAmount)) {
+            $whereParts[] = "amount >= ?";
+            $params[] = round((float)$minAmount, 2);
+        }
+        if ($maxAmount !== null && is_numeric($maxAmount)) {
+            $whereParts[] = "amount <= ?";
+            $params[] = round((float)$maxAmount, 2);
         }
 
         if ($startDate) {
@@ -176,7 +183,7 @@ class FundFlowController
         $logs = $this->enrichLogs($rawLogs);
 
         $enrichedFlow['operation_logs'] = $logs;
-        $enrichedFlow['available_statuses'] = $this->getAvailableStatuses($currentStatus);
+        $enrichedFlow['available_statuses'] = $this->getAvailableFlowStatuses($currentStatus);
 
         return $this->router->success($enrichedFlow);
     }
@@ -271,6 +278,13 @@ class FundFlowController
         if (empty($flowType)) {
             return $this->router->error('流水类型不能为空');
         }
+        $allowedFlowTypes = array_keys($this->model->getFlowTypes());
+        if (!in_array($flowType, $allowedFlowTypes, true)) {
+            return $this->router->error('不支持的流水类型: ' . $flowType, 1, 400, [
+                'error_code' => 'INVALID_FLOW_TYPE',
+                'allowed_types' => $allowedFlowTypes
+            ]);
+        }
         if (!in_array($direction, [FundFlow::DIRECTION_IN, FundFlow::DIRECTION_OUT])) {
             return $this->router->error('资金方向错误');
         }
@@ -331,7 +345,11 @@ class FundFlowController
 
         } catch (\Exception $e) {
             $db->rollBack();
-            return $this->router->error('创建失败: ' . $e->getMessage());
+            return $this->router->error('创建失败: ' . $e->getMessage(), 1, 400, [
+                'rolled_back' => true,
+                'error_code' => 'CREATE_EXCEPTION',
+                'error_detail' => $e->getMessage()
+            ]);
         }
     }
 
@@ -345,18 +363,27 @@ class FundFlowController
 
         $flow = $this->model->find($id);
         if (!$flow) {
-            return $this->router->error('资金流水不存在', 404, 404);
+            return $this->router->error('资金流水不存在', 404, 404, [
+                'error_code' => 'NOT_FOUND',
+                'error_detail' => 'fund flow not found'
+            ]);
         }
 
         $oldStatus = (int)$flow['status'];
         if ($oldStatus === $newStatus) {
-            return $this->router->error('状态未发生变化', null, 400);
+            return $this->router->error('状态未发生变化', 2, 400, [
+                'error_code' => 'STATUS_UNCHANGED',
+                'error_detail' => 'new status equals old status'
+            ]);
         }
 
         if (!$this->model->canTransitionTo($oldStatus, $newStatus)) {
             $oldLabel = $this->model->getStatusLabel($oldStatus);
             $newLabel = $this->model->getStatusLabel($newStatus);
-            return $this->router->error("不允许从[{$oldLabel}]变更为[{$newLabel}]", null, 400);
+            return $this->router->error("不允许从[{$oldLabel}]变更为[{$newLabel}]", 3, 400, [
+                'error_code' => 'STATUS_TRANSITION_FORBIDDEN',
+                'error_detail' => "cannot transition from status {$oldStatus} to {$newStatus}"
+            ]);
         }
 
         $db = $this->model->getDb();
@@ -378,7 +405,7 @@ class FundFlowController
             $this->model->update($id, ['status' => $newStatus]);
 
             if (abs($balanceDelta) > 0.001) {
-                $adjustSql = "UPDATE fund_flows SET balance = balance + ? WHERE id > ?";
+                $adjustSql = "UPDATE fund_flows SET balance = ROUND(balance + ?, 2) WHERE id > ?";
                 $db->query($adjustSql, [round($balanceDelta, 2), $id]);
             }
 
@@ -413,7 +440,11 @@ class FundFlowController
 
         } catch (\Exception $e) {
             $db->rollBack();
-            return $this->router->error('状态变更失败: ' . $e->getMessage());
+            return $this->router->error('状态变更失败: ' . $e->getMessage(), 1, 400, [
+                'rolled_back' => true,
+                'error_code' => 'STATUS_CHANGE_EXCEPTION',
+                'error_detail' => $e->getMessage()
+            ]);
         }
     }
 
@@ -425,12 +456,18 @@ class FundFlowController
         $operator = $input['operator'] ?? 'admin';
 
         if (empty($remark)) {
-            return $this->router->error('备注内容不能为空');
+            return $this->router->error('备注内容不能为空', 1, 400, [
+                'error_code' => 'REMARK_EMPTY',
+                'error_detail' => 'remark is required'
+            ]);
         }
 
         $flow = $this->model->find($id);
         if (!$flow) {
-            return $this->router->error('资金流水不存在', 404, 404);
+            return $this->router->error('资金流水不存在', 404, 404, [
+                'error_code' => 'NOT_FOUND',
+                'error_detail' => 'fund flow not found'
+            ]);
         }
 
         $oldRemark = $flow['remark'] ?? '';
@@ -464,7 +501,11 @@ class FundFlowController
 
         } catch (\Exception $e) {
             $db->rollBack();
-            return $this->router->error('备注添加失败: ' . $e->getMessage());
+            return $this->router->error('备注添加失败: ' . $e->getMessage(), 1, 400, [
+                'rolled_back' => true,
+                'error_code' => 'REMARK_EXCEPTION',
+                'error_detail' => $e->getMessage()
+            ]);
         }
     }
 

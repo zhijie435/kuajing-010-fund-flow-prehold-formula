@@ -481,13 +481,9 @@ const WithholdingView = {
     },
     async loadStats() {
       try {
-        const res = await api.withholding.details({ per_page: 1000 });
+        const res = await api.withholding.stats();
         if (res && res.code === 0) {
-          const data = res.data.data;
-          this.stats.total_count = data.length;
-          this.stats.total_amount = data.reduce((sum, item) => sum + (Number(item.result) || 0), 0);
-          this.stats.completed_count = data.filter(item => item.status === 1).length;
-          this.stats.pending_count = data.filter(item => item.status === 0).length;
+          this.stats = res.data;
         }
       } catch (e) {
         console.error('加载统计失败:', e);
@@ -571,13 +567,37 @@ const WithholdingView = {
           this.calcResult = res.data;
         } else {
           const msg = res && res.message ? res.message : '预览失败';
-          ElementPlus.ElMessage.error(msg);
+          const errorCode = res && res.data && res.data.error_code ? res.data.error_code : '';
+          const errorDetail = res && res.data && res.data.error_detail
+            ? (Array.isArray(res.data.error_detail) ? res.data.error_detail.join(', ') : res.data.error_detail)
+            : msg;
+          await this._showPreviewFailureDialog(msg, errorCode, errorDetail);
         }
       } catch (e) {
-        ElementPlus.ElMessage.error('预览异常：' + (e.message || '网络错误'));
+        const msg = '预览异常：' + (e.message || '网络错误');
+        await this._showPreviewFailureDialog(msg, 'NETWORK_ERROR', e.message || '网络错误');
       } finally {
         this.previewLoading = false;
       }
+    },
+    async _showPreviewFailureDialog(msg, errorCode, errorDetail) {
+      const codeTip = errorCode
+        ? `<div style="margin-top: 6px; font-size: 12px; color: #909399;">错误代码：${errorCode}</div>`
+        : '';
+      const detailHtml = errorDetail && errorDetail !== msg
+        ? `<div style="margin-top: 10px; padding: 10px; background: #fef0f0; border-radius: 4px; font-size: 12px; color: #f56c6c; font-family: monospace; max-height: 120px; overflow-y: auto;">错误详情：${errorDetail}</div>`
+        : '';
+      try {
+        await ElementPlus.ElMessageBox.alert(
+          `<div style="line-height: 1.6;">
+            <div style="color: #f56c6c; font-size: 14px; font-weight: 600;">${msg}</div>
+            ${codeTip}
+            ${detailHtml}
+          </div>`,
+          '预览失败',
+          { dangerouslyUseHTMLString: true, confirmButtonText: '关闭', type: 'error' }
+        );
+      } catch (e) {}
     },
     async doCalculate() {
       if (!this.canCalculate) {
@@ -797,40 +817,26 @@ const WithholdingView = {
         ElementPlus.ElMessage.error('加载异常：' + (e.message || '网络错误'));
       }
     },
-    openStatusDialog(row) {
+    async openStatusDialog(row) {
       this.selectedRow = row;
       this.statusForm = { status: null, operator: 'admin', remark: '' };
       this.statusChangeImpact = '';
       if (row.available_statuses && row.available_statuses.length > 0) {
         this.availableStatuses = row.available_statuses;
       } else {
-        this.availableStatuses = this.getAvailableStatuses(row.status);
+        try {
+          const res = await api.withholding.detail(row.id);
+          if (res && res.code === 0 && res.data.available_statuses) {
+            this.availableStatuses = res.data.available_statuses;
+            this.selectedRow = res.data;
+          } else {
+            this.availableStatuses = [];
+          }
+        } catch (e) {
+          this.availableStatuses = [];
+        }
       }
       this.statusDialogVisible = true;
-    },
-    getAvailableStatuses(currentStatus) {
-      const statuses = [];
-      const transitions = {
-        0: [1, 2, 3],
-        1: [4, 5],
-        2: [0, 3],
-        3: [],
-        4: [],
-        5: [4]
-      };
-      const labels = { 0: '待处理', 1: '已完成', 2: '失败', 3: '已取消', 4: '已冲正', 5: '已结算' };
-      const descs = { 
-        0: '预扣计算完成，等待关联资金流水确认',
-        1: '预扣已完成，关联资金流水已到账',
-        2: '预扣计算或关联流水处理失败',
-        3: '预扣已被手动取消',
-        4: '原预扣已被冲正撤销',
-        5: '预扣金额已完成最终结算'
-      };
-      (transitions[currentStatus] || []).forEach(val => {
-        statuses.push({ value: val, label: labels[val], description: descs[val] });
-      });
-      return statuses;
     },
     async doStatusChange() {
       if (!this.selectedRow || this.statusForm.status === null) return;

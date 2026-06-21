@@ -40,12 +40,7 @@ const FundFlowView = {
             <el-option v-for="(label, value) in statusTypes" :key="value" :label="label" :value="Number(value)" />
           </el-select>
           <el-select v-model="search.flow_type" placeholder="流水类型" clearable style="width: 140px;">
-            <el-option label="充值" value="recharge" />
-            <el-option label="提现" value="withdraw" />
-            <el-option label="预扣" value="withholding" />
-            <el-option label="退款" value="refund" />
-            <el-option label="调账" value="adjustment" />
-            <el-option label="其他" value="other" />
+            <el-option v-for="(label, key) in flowTypeMap" :key="key" :label="label" :value="key" />
           </el-select>
           <el-select v-model="search.direction" placeholder="方向" clearable style="width: 110px;">
             <el-option label="流入" :value="1" />
@@ -284,8 +279,7 @@ const FundFlowView = {
       search: { status: null, flow_type: '', direction: null, keyword: '', min_amount: null, max_amount: null },
       pagination: { page: 1, per_page: 20, total: 0 },
       flowTypeMap: {
-        recharge: '充值', withdraw: '提现', withholding: '预扣',
-        refund: '退款', adjustment: '调账', other: '其他'
+        withholding: '预扣', refund: '退款', settlement: '结算', adjust: '调整'
       },
       detailDrawerVisible: false,
       statusDialogVisible: false,
@@ -408,38 +402,26 @@ const FundFlowView = {
         ElementPlus.ElMessage.error('加载异常：' + (e.message || '网络错误'));
       }
     },
-    openStatusDialog(row) {
+    async openStatusDialog(row) {
       this.selectedRow = row;
       this.statusForm = { status: null, operator: 'admin', remark: '' };
       this.statusChangeImpact = '';
       if (row.available_statuses && row.available_statuses.length > 0) {
         this.availableStatuses = row.available_statuses;
       } else {
-        this.availableStatuses = this.getAvailableStatuses(row.status);
+        try {
+          const res = await api.fundflow.detail(row.id);
+          if (res && res.code === 0 && res.data.available_statuses) {
+            this.availableStatuses = res.data.available_statuses;
+            this.selectedRow = res.data;
+          } else {
+            this.availableStatuses = [];
+          }
+        } catch (e) {
+          this.availableStatuses = [];
+        }
       }
       this.statusDialogVisible = true;
-    },
-    getAvailableStatuses(currentStatus) {
-      const statuses = [];
-      const transitions = {
-        0: [1, 2, 3],
-        1: [4],
-        2: [0, 3],
-        3: [],
-        4: []
-      };
-      const labels = { 0: '待处理', 1: '已完成', 2: '失败', 3: '已取消', 4: '已冲正' };
-      const descs = { 
-        0: '资金变动待确认',
-        1: '资金变动已生效',
-        2: '资金变动处理失败',
-        3: '资金变动已取消',
-        4: '原流水已被冲正撤销'
-      };
-      (transitions[currentStatus] || []).forEach(val => {
-        statuses.push({ value: val, label: labels[val], description: descs[val] });
-      });
-      return statuses;
     },
     async doStatusChange() {
       if (!this.selectedRow || this.statusForm.status === null) return;

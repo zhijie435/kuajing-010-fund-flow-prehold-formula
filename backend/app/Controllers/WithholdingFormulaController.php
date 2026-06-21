@@ -36,13 +36,13 @@ class WithholdingFormulaController
         
         if ($keyword) {
             $db = $this->model->getDb();
+            $escapedKeyword = '%' . addcslashes($keyword, '%_') . '%';
             $searchSql = "SELECT * FROM withholding_formulas WHERE name LIKE ? OR code LIKE ? ORDER BY id DESC LIMIT ? OFFSET ?";
             $countSql = "SELECT COUNT(*) as total FROM withholding_formulas WHERE name LIKE ? OR code LIKE ?";
-            $searchKeyword = "%$keyword%";
             $offset = ($page - 1) * $perPage;
             
-            $result['data'] = $db->fetchAll($searchSql, [$searchKeyword, $searchKeyword, $perPage, $offset]);
-            $total = $db->fetch($countSql, [$searchKeyword, $searchKeyword]);
+            $result['data'] = $db->fetchAll($searchSql, [$escapedKeyword, $escapedKeyword, $perPage, $offset]);
+            $total = $db->fetch($countSql, [$escapedKeyword, $escapedKeyword]);
             $result['total'] = (int)$total['total'];
             $result['total_pages'] = (int)ceil($result['total'] / $perPage);
         }
@@ -62,7 +62,10 @@ class WithholdingFormulaController
         $formula = $this->model->find($id);
         
         if (!$formula) {
-            return $this->router->error('公式不存在', 404, 404);
+            return $this->router->error('公式不存在', 404, 404, [
+                'error_code' => 'NOT_FOUND',
+                'error_detail' => 'formula not found'
+            ]);
         }
         
         if (!empty($formula['variables'])) {
@@ -77,18 +80,30 @@ class WithholdingFormulaController
         $input = $this->router->getInput();
         
         if (empty($input['name'])) {
-            return $this->router->error('公式名称不能为空');
+            return $this->router->error('公式名称不能为空', 1, 400, [
+                'error_code' => 'NAME_EMPTY',
+                'error_detail' => 'name is required'
+            ]);
         }
         if (empty($input['code'])) {
-            return $this->router->error('公式编码不能为空');
+            return $this->router->error('公式编码不能为空', 1, 400, [
+                'error_code' => 'CODE_EMPTY',
+                'error_detail' => 'code is required'
+            ]);
         }
         if (empty($input['formula'])) {
-            return $this->router->error('公式表达式不能为空');
+            return $this->router->error('公式表达式不能为空', 1, 400, [
+                'error_code' => 'FORMULA_EMPTY',
+                'error_detail' => 'formula is required'
+            ]);
         }
         
         $existing = $this->model->findByCode($input['code']);
         if ($existing) {
-            return $this->router->error('公式编码已存在');
+            return $this->router->error('公式编码已存在', 1, 400, [
+                'error_code' => 'CODE_DUPLICATE',
+                'error_detail' => 'code already exists'
+            ]);
         }
         
         $variables = $input['variables'] ?? [];
@@ -98,7 +113,10 @@ class WithholdingFormulaController
         
         $validation = $this->calculator->validateFormula($input['formula'], $variables);
         if (!$validation['valid']) {
-            return $this->router->error('公式验证失败: ' . implode(', ', $validation['errors']));
+            return $this->router->error('公式验证失败: ' . implode(', ', $validation['errors']), 1, 400, [
+                'error_code' => 'FORMULA_INVALID',
+                'error_detail' => $validation['errors']
+            ]);
         }
         
         $data = [
@@ -122,14 +140,23 @@ class WithholdingFormulaController
         
         $formula = $this->model->find($id);
         if (!$formula) {
-            return $this->router->error('公式不存在', 404, 404);
+            return $this->router->error('公式不存在', 404, 404, [
+                'error_code' => 'NOT_FOUND',
+                'error_detail' => 'formula not found'
+            ]);
         }
         
         if (empty($input['name'])) {
-            return $this->router->error('公式名称不能为空');
+            return $this->router->error('公式名称不能为空', 1, 400, [
+                'error_code' => 'NAME_EMPTY',
+                'error_detail' => 'name is required'
+            ]);
         }
         if (empty($input['formula'])) {
-            return $this->router->error('公式表达式不能为空');
+            return $this->router->error('公式表达式不能为空', 1, 400, [
+                'error_code' => 'FORMULA_EMPTY',
+                'error_detail' => 'formula is required'
+            ]);
         }
         
         $variables = $input['variables'] ?? [];
@@ -139,7 +166,10 @@ class WithholdingFormulaController
         
         $validation = $this->calculator->validateFormula($input['formula'], $variables);
         if (!$validation['valid']) {
-            return $this->router->error('公式验证失败: ' . implode(', ', $validation['errors']));
+            return $this->router->error('公式验证失败: ' . implode(', ', $validation['errors']), 1, 400, [
+                'error_code' => 'FORMULA_INVALID',
+                'error_detail' => $validation['errors']
+            ]);
         }
         
         $data = [
@@ -161,7 +191,10 @@ class WithholdingFormulaController
         $formula = $this->model->find($id);
         
         if (!$formula) {
-            return $this->router->error('公式不存在', 404, 404);
+            return $this->router->error('公式不存在', 404, 404, [
+                'error_code' => 'NOT_FOUND',
+                'error_detail' => 'formula not found'
+            ]);
         }
         
         $this->model->delete($id);

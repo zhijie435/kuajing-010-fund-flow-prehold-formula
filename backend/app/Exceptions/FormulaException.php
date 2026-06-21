@@ -11,6 +11,7 @@ class FormulaException extends \Exception
     const CODE_UNSAFE = 1005;
     const CODE_NEGATIVE_RESULT = 1006;
     const CODE_RECORD_FAILED = 1007;
+    const CODE_MISSING_VARIABLES = 1008;
 
     private $errorCode;
 
@@ -53,6 +54,11 @@ class FormulaException extends \Exception
     public static function recordFailed(string $detail): self
     {
         return new self("记录创建失败: {$detail}", self::CODE_RECORD_FAILED);
+    }
+
+    public static function missingVariables(array $names): self
+    {
+        return new self("缺少必填变量: " . implode(', ', $names), self::CODE_MISSING_VARIABLES);
     }
 
     public function getErrorCode(): int

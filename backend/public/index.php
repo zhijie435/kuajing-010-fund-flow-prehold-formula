@@ -33,6 +33,7 @@ $router->post('/api/withholding/preview', [WithholdingController::class, 'previe
 $router->post('/api/withholding/batch-calculate', [WithholdingController::class, 'batchCalculate']);
 $router->get('/api/withholding/details', [WithholdingController::class, 'details']);
 $router->get('/api/withholding/details/status-types', [WithholdingController::class, 'statusTypes']);
+$router->get('/api/withholding/details/stats', [WithholdingController::class, 'stats']);
 $router->get('/api/withholding/details/{id}', [WithholdingController::class, 'detail']);
 $router->get('/api/withholding/details/{id}/logs', [WithholdingController::class, 'operationLogs']);
 $router->put('/api/withholding/details/{id}/status', [WithholdingController::class, 'changeStatus']);

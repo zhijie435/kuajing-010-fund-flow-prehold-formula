@@ -70,6 +70,7 @@ const api = {
     changeStatus(id, data) { return api.put(`/withholding/details/${id}/status`, data); },
     addRemark(id, data) { return api.put(`/withholding/details/${id}/remark`, data); },
     statusTypes() { return api.get('/withholding/details/status-types'); },
+    stats() { return api.get('/withholding/details/stats'); },
   },
 
   fundflow: {

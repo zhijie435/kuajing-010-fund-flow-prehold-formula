@@ -32,11 +32,11 @@ class FundFlow extends Model
         return 'FF' . date('YmdHis') . rand(1000, 9999);
     }
 
-    public function getLatestBalance()
+    public function getLatestBalance(): float
     {
         $sql = "SELECT balance FROM {$this->table} ORDER BY id DESC LIMIT 1";
         $result = $this->db->fetch($sql);
-        return $result ? (float)$result['balance'] : 0;
+        return $result ? round((float)$result['balance'], 2) : 0.0;
     }
 
     public function findByOrderNo(string $orderNo): array

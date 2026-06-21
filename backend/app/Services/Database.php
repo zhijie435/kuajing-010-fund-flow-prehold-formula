@@ -13,7 +13,7 @@ class Database
     private function __construct()
     {
         $config = require __DIR__ . '/../../config/config.php';
-        $dbPath = $config['db']['path'];
+        $dbPath = $GLOBALS['test_db_path'] ?? $config['db']['path'];
         
         $dir = dirname($dbPath);
         if (!is_dir($dir)) {
