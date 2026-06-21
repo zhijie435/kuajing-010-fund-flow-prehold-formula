@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>电商订单库存后台 - 预扣金额管理</title>
+  <link rel="stylesheet" href="https://unpkg.com/element-plus@2.4.4/dist/index.css">
+  <link rel="stylesheet" href="https://unpkg.com/element-plus@2.4.4/dist/index.css">
+  <link rel="stylesheet" href="https://unpkg.com/@element-plus/icons-vue@2.3.1/dist/index.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body, #app { height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: #f0f2f5;
+    }
+    .layout-container { display: flex; height: 100vh; }
+    .sidebar {
+      width: 240px;
+      background: linear-gradient(180deg, #001529 0%, #002140 100%);
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+    }
+    .sidebar-logo {
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      font-weight: 600;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+      letter-spacing: 1px;
+    }
+    .sidebar-menu { flex: 1; padding: 12px 0; }
+    .menu-item {
+      display: flex;
+      align-items: center;
+      padding: 12px 24px;
+      cursor: pointer;
+      transition: all 0.3s;
+      color: rgba(255,255,255,0.75);
+      font-size: 14px;
+    }
+    .menu-item:hover {
+      background: rgba(255,255,255,0.08);
+      color: #fff;
+    }
+    .menu-item.active {
+      background: #409eff;
+      color: #fff;
+    }
+    .menu-item .el-icon { margin-right: 10px; font-size: 16px; }
+    .main-container { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .header {
+      height: 64px;
+      background: #fff;
+      border-bottom: 1px solid #e4e7ed;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      box-shadow: 0 1px 4px rgba(0,21,41,0.08);
+    }
+    .header-title { font-size: 18px; font-weight: 600; color: #303133; }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .content-wrapper {
+      flex: 1;
+      overflow: auto;
+      padding: 20px;
+    }
+    .page-container { background: #fff; border-radius: 8px; padding: 24px; }
+    .page-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .page-title { font-size: 20px; font-weight: 600; color: #303133; }
+    .stats-cards {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .stat-card {
+      background: #fff;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .stat-card .label {
+      font-size: 14px;
+      color: #909399;
+      margin-bottom: 8px;
+    }
+    .stat-card .value {
+      font-size: 28px;
+      font-weight: 600;
+      color: #303133;
+    }
+    .stat-card.blue .value { color: #409eff; }
+    .stat-card.green .value { color: #67c23a; }
+    .stat-card.orange .value { color: #e6a23c; }
+    .stat-card.red .value { color: #f56c6c; }
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    .section-card {
+      background: #fff;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .section-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #303133;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #ebeef5;
+    }
+    .formula-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      background: #ecf5ff;
+      color: #409eff;
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: 'SF Mono', Monaco, monospace;
+    }
+    .variable-tag {
+      display: inline-block;
+      padding: 2px 8px;
+      background: #f0f9eb;
+      color: #67c23a;
+      border-radius: 4px;
+      font-size: 12px;
+      margin-right: 4px;
+    }
+    .result-preview {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #fff;
+      border-radius: 8px;
+      padding: 24px;
+      text-align: center;
+    }
+    .result-preview .amount {
+      font-size: 36px;
+      font-weight: 700;
+      margin: 12px 0;
+    }
+    .result-preview .formula {
+      font-size: 13px;
+      opacity: 0.9;
+      font-family: 'SF Mono', Monaco, monospace;
+      margin-top: 8px;
+    }
+    .flow-in { color: #67c23a !important; font-weight: 600; }
+    .flow-out { color: #f56c6c !important; font-weight: 600; }
+    .el-table .cell { font-size: 13px; }
+    .detail-drawer-item {
+      display: flex;
+      margin-bottom: 16px;
+      font-size: 14px;
+    }
+    .detail-drawer-label {
+      width: 120px;
+      color: #909399;
+      flex-shrink: 0;
+    }
+    .detail-drawer-value {
+      color: #303133;
+      flex: 1;
+    }
+    .variables-list {
+      background: #f5f7fa;
+      border-radius: 6px;
+      padding: 16px;
+    }
+    .variable-row {
+      display: flex;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .variable-row:last-child { margin-bottom: 0; }
+    .variable-label {
+      width: 140px;
+      font-size: 13px;
+      color: #606266;
+    }
+    .variable-input { flex: 1; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="layout-container">
+      <div class="sidebar">
+        <div class="sidebar-logo">
+          <el-icon style="margin-right: 8px; color: #409eff;"><Shop /></el-icon>
+          电商库存管理系统
+        </div>
+        <div class="sidebar-menu">
+          <div
+            v-for="menu in menus"
+            :key="menu.key"
+            :class="['menu-item', { active: currentMenu === menu.key }]"
+            @click="currentMenu = menu.key"
+          >
+            <el-icon><component :is="menu.icon" /></el-icon>
+            {{ menu.label }}
+          </div>
+        </div>
+      </div>
+
+      <div class="main-container">
+        <div class="header">
+          <div class="header-title">{{ currentMenuLabel }}</div>
+          <div class="header-right">
+            <el-tag type="success" effect="plain">系统运行中</el-tag>
+            <el-avatar :size="32" style="background: #409eff;">A</el-avatar>
+          </div>
+        </div>
+
+        <div class="content-wrapper">
+          <dashboard-view v-if="currentMenu === 'dashboard'" ref="dashboard"></dashboard-view>
+          <formula-view v-else-if="currentMenu === 'formula'" ref="formulaView"></formula-view>
+          <withholding-view v-else-if="currentMenu === 'withholding'" ref="withholdingView"></withholding-view>
+          <fundflow-view v-else-if="currentMenu === 'fundflow'" ref="fundflowView"></fundflow-view>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/vue@3.4.0/dist/vue.global.js"></script>
+  <script src="https://unpkg.com/element-plus@2.4.4/dist/index.full.js"></script>
+  <script src="https://unpkg.com/@element-plus/icons-vue@2.3.1/dist/index.iife.min.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/dashboard.js"></script>
+  <script src="js/formula.js"></script>
+  <script src="js/withholding.js"></script>
+  <script src="js/fundflow.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
