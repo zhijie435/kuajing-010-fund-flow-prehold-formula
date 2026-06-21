@@ -670,15 +670,49 @@ const FormulaView = {
           this.previewResult = res.data;
           ElementPlus.ElMessage.success('预扣执行成功，已记录明细和资金流水');
           this.loadList();
+          this.tryDialogVisible = false;
         } else {
-          this.tryError = res && res.message ? res.message : '执行失败';
-          ElementPlus.ElMessage.error(this.tryError);
+          const msg = res && res.message ? res.message : '执行失败';
+          const rolledBack = res && res.data && res.data.rolled_back;
+          const errorDetail = res && res.data && res.data.error_detail ? res.data.error_detail : msg;
+          this.tryError = msg;
+          await this._showTryCalcFailureDialog(msg, rolledBack, errorDetail);
         }
       } catch (e) {
-        this.tryError = '执行异常：' + (e.message || '网络错误');
-        ElementPlus.ElMessage.error(this.tryError);
+        const msg = '执行异常：' + (e.message || '网络错误');
+        this.tryError = msg;
+        await this._showTryCalcFailureDialog(msg, true, e.message || '网络错误');
       } finally {
         this.calcLoading = false;
+      }
+    },
+    async _showTryCalcFailureDialog(msg, rolledBack, errorDetail) {
+      const rollbackTip = rolledBack
+        ? '<div style="color: #e6a23c; margin-top: 8px; font-size: 13px;"><strong>✓ 系统已自动回滚</strong>，未产生任何预扣明细和资金流水记录，数据安全。</div>'
+        : '';
+      const errorHtml = errorDetail
+        ? `<div style="margin-top: 12px; padding: 10px; background: #fef0f0; border-radius: 4px; font-size: 12px; color: #f56c6c; font-family: monospace;">错误详情：${errorDetail}</div>`
+        : '';
+      try {
+        await ElementPlus.ElMessageBox.alert(
+          `<div style="line-height: 1.6;">
+            <div style="color: #f56c6c; font-size: 14px; font-weight: 600;">${msg}</div>
+            ${rollbackTip}
+            ${errorHtml}
+          </div>`,
+          '提交失败',
+          {
+            dangerouslyUseHTMLString: true,
+            confirmButtonText: '关闭',
+            showCancelButton: true,
+            cancelButtonText: '重试',
+            type: 'error',
+          }
+        );
+      } catch (action) {
+        if (action === 'cancel') {
+          this.doCalculate();
+        }
       }
     },
     formatMoney(v) {

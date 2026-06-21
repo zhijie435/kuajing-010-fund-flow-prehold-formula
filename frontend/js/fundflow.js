@@ -135,7 +135,7 @@ const FundFlowView = {
         </div>
       </div>
 
-      <el-drawer v-model="detailDrawerVisible" title="资金流水详情" size="520px" destroy-on-close>
+      <el-drawer v-model="detailDrawerVisible" title="资金流水详情" size="520px" destroy-on-close @close="closeDetailDrawer">
         <div v-if="detailData">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
             <div class="page-title" style="font-size: 16px;">基本信息</div>
@@ -213,7 +213,7 @@ const FundFlowView = {
         </template>
       </el-drawer>
 
-      <el-dialog v-model="statusDialogVisible" title="变更状态" width="480px" destroy-on-close>
+      <el-dialog v-model="statusDialogVisible" title="变更状态" width="480px" destroy-on-close @close="closeStatusDialog">
         <div v-if="selectedRow">
           <el-alert title="当前状态" :type="selectedRow.status_tag_type" :closable="false" style="margin-bottom: 16px;">
             <div style="display: flex; align-items: center; gap: 12px;">
@@ -258,7 +258,7 @@ const FundFlowView = {
         </template>
       </el-dialog>
 
-      <el-dialog v-model="remarkDialogVisible" title="添加备注" width="420px" destroy-on-close>
+      <el-dialog v-model="remarkDialogVisible" title="添加备注" width="420px" destroy-on-close @close="closeRemarkDialog">
         <el-form :model="remarkForm" label-width="100px">
           <el-form-item label="备注内容" required>
             <el-input v-model="remarkForm.remark" type="textarea" :rows="4" placeholder="请输入备注内容" maxlength="500" show-word-limit />
@@ -453,10 +453,10 @@ const FundFlowView = {
         if (res && res.code === 0) {
           ElementPlus.ElMessage.success('状态变更成功');
           this.statusDialogVisible = false;
-          this.loadList();
-          this.loadStats();
+          await this.loadList();
+          await this.loadStats();
           if (this.detailDrawerVisible) {
-            this.showDetail(this.selectedRow);
+            await this.showDetail(this.selectedRow);
           }
         } else {
           ElementPlus.ElMessage.error(res && res.message ? res.message : '状态变更失败');
@@ -466,6 +466,20 @@ const FundFlowView = {
       } finally {
         this.statusChanging = false;
       }
+    },
+    closeStatusDialog() {
+      this.statusDialogVisible = false;
+      this.statusForm = { status: null, operator: 'admin', remark: '' };
+      this.statusChangeImpact = '';
+    },
+    closeRemarkDialog() {
+      this.remarkDialogVisible = false;
+      this.remarkForm = { remark: '', operator: 'admin' };
+    },
+    closeDetailDrawer() {
+      this.detailDrawerVisible = false;
+      this.detailData = null;
+      this.selectedRow = null;
     },
     openRemarkDialog(row) {
       this.selectedRow = row;
@@ -483,9 +497,9 @@ const FundFlowView = {
         if (res && res.code === 0) {
           ElementPlus.ElMessage.success('备注添加成功');
           this.remarkDialogVisible = false;
-          this.loadList();
+          await this.loadList();
           if (this.detailDrawerVisible) {
-            this.showDetail(this.selectedRow);
+            await this.showDetail(this.selectedRow);
           }
         } else {
           ElementPlus.ElMessage.error(res && res.message ? res.message : '备注添加失败');

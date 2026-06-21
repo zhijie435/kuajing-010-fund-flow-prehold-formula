@@ -128,12 +128,12 @@ class Router
         ]);
     }
 
-    public function error(string $message = 'error', int $code = 1, int $statusCode = 400)
+    public function error(string $message = 'error', int $code = 1, int $statusCode = 400, array $extra = [])
     {
         return $this->jsonResponse([
             'code' => $code,
             'message' => $message,
-            'data' => null
+            'data' => empty($extra) ? null : $extra
         ], $statusCode);
     }
 }

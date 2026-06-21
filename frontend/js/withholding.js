@@ -185,7 +185,7 @@ const WithholdingView = {
         </template>
       </el-dialog>
 
-      <el-dialog v-model="batchDialogVisible" title="批量执行预扣" width="720px" destroy-on-close>
+      <el-dialog v-model="batchDialogVisible" title="批量执行预扣" width="720px" destroy-on-close @close="closeBatchDialog">
         <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
           <el-button size="small" type="primary" link @click="addBatchItem">
             <el-icon><Plus /></el-icon> 添加条目
@@ -232,7 +232,7 @@ const WithholdingView = {
         </template>
       </el-dialog>
 
-      <el-drawer v-model="detailDrawerVisible" title="预扣明细详情" size="520px" destroy-on-close>
+      <el-drawer v-model="detailDrawerVisible" title="预扣明细详情" size="520px" destroy-on-close @close="closeDetailDrawer">
         <div v-if="detailData">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
             <div class="page-title" style="font-size: 16px;">基本信息</div>
@@ -325,7 +325,7 @@ const WithholdingView = {
         </template>
       </el-drawer>
 
-      <el-dialog v-model="statusDialogVisible" title="变更状态" width="480px" destroy-on-close>
+      <el-dialog v-model="statusDialogVisible" title="变更状态" width="480px" destroy-on-close @close="closeStatusDialog">
         <div v-if="selectedRow">
           <el-alert title="当前状态" :type="selectedRow.status_tag_type" :closable="false" style="margin-bottom: 16px;">
             <div style="display: flex; align-items: center; gap: 12px;">
@@ -370,7 +370,7 @@ const WithholdingView = {
         </template>
       </el-dialog>
 
-      <el-dialog v-model="remarkDialogVisible" title="添加备注" width="420px" destroy-on-close>
+      <el-dialog v-model="remarkDialogVisible" title="添加备注" width="420px" destroy-on-close @close="closeRemarkDialog">
         <el-form :model="remarkForm" label-width="100px">
           <el-form-item label="备注内容" required>
             <el-input v-model="remarkForm.remark" type="textarea" :rows="4" placeholder="请输入备注内容" maxlength="500" show-word-limit />
@@ -589,31 +589,67 @@ const WithholdingView = {
         '确认执行',
         { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' }
       ).then(async () => {
-        this.calcLoading = true;
-        try {
-          const res = await api.withholding.calculate({
-            formula_code: this.calcForm.formula_code,
-            variables: this.calcForm.variables,
-            order_no: this.calcForm.order_no,
-            operator: this.calcForm.operator,
-            remark: this.calcForm.remark,
-            initial_status: this.calcForm.initial_status,
-          });
-          if (res && res.code === 0) {
-            this.calcResult = res.data;
-            ElementPlus.ElMessage.success('预扣执行成功，已记录明细和资金流水');
-            this.loadList();
-            this.loadStats();
-          } else {
-            const msg = res && res.message ? res.message : '执行失败';
-            ElementPlus.ElMessage.error(msg);
-          }
-        } catch (e) {
-          ElementPlus.ElMessage.error('执行异常：' + (e.message || '网络错误'));
-        } finally {
-          this.calcLoading = false;
-        }
+        await this._doCalculateExecute();
       }).catch(() => {});
+    },
+    async _doCalculateExecute() {
+      this.calcLoading = true;
+      try {
+        const res = await api.withholding.calculate({
+          formula_code: this.calcForm.formula_code,
+          variables: this.calcForm.variables,
+          order_no: this.calcForm.order_no,
+          operator: this.calcForm.operator,
+          remark: this.calcForm.remark,
+          initial_status: this.calcForm.initial_status,
+        });
+        if (res && res.code === 0) {
+          this.calcResult = res.data;
+          ElementPlus.ElMessage.success('预扣执行成功，已记录明细和资金流水');
+          this.loadList();
+          this.loadStats();
+          this.calcDialogVisible = false;
+        } else {
+          const msg = res && res.message ? res.message : '执行失败';
+          const rolledBack = res && res.data && res.data.rolled_back;
+          const errorDetail = res && res.data && res.data.error_detail ? res.data.error_detail : msg;
+          await this._showCalcFailureDialog(msg, rolledBack, errorDetail);
+        }
+      } catch (e) {
+        const msg = '执行异常：' + (e.message || '网络错误');
+        await this._showCalcFailureDialog(msg, true, e.message || '网络错误');
+      } finally {
+        this.calcLoading = false;
+      }
+    },
+    async _showCalcFailureDialog(msg, rolledBack, errorDetail) {
+      const rollbackTip = rolledBack
+        ? '<div style="color: #e6a23c; margin-top: 8px; font-size: 13px;"><strong>✓ 系统已自动回滚</strong>，未产生任何预扣明细和资金流水记录，数据安全。</div>'
+        : '';
+      const errorHtml = errorDetail
+        ? `<div style="margin-top: 12px; padding: 10px; background: #fef0f0; border-radius: 4px; font-size: 12px; color: #f56c6c; font-family: monospace;">错误详情：${errorDetail}</div>`
+        : '';
+      try {
+        await ElementPlus.ElMessageBox.alert(
+          `<div style="line-height: 1.6;">
+            <div style="color: #f56c6c; font-size: 14px; font-weight: 600;">${msg}</div>
+            ${rollbackTip}
+            ${errorHtml}
+          </div>`,
+          '提交失败',
+          {
+            dangerouslyUseHTMLString: true,
+            confirmButtonText: '关闭',
+            showCancelButton: true,
+            cancelButtonText: '重试',
+            type: 'error',
+          }
+        );
+      } catch (action) {
+        if (action === 'cancel') {
+          this._doCalculateExecute();
+        }
+      }
     },
     openBatchDialog() {
       this.batchItems = [];
@@ -662,22 +698,91 @@ const WithholdingView = {
         '确认批量执行',
         { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' }
       ).then(async () => {
-        this.batchLoading = true;
-        try {
-          const res = await api.withholding.batchCalculate({ items });
-          if (res && res.code === 0) {
-            ElementPlus.ElMessage.success(`批量执行成功：${res.data.summary.success} 条`);
-            this.loadList();
-            this.loadStats();
-          } else {
-            ElementPlus.ElMessage.error(res && res.message ? res.message : '批量执行失败');
-          }
-        } catch (e) {
-          ElementPlus.ElMessage.error('执行异常：' + (e.message || '网络错误'));
-        } finally {
-          this.batchLoading = false;
-        }
+        await this._doBatchExecute(items);
       }).catch(() => {});
+    },
+    async _doBatchExecute(items) {
+      this.batchLoading = true;
+      try {
+        const res = await api.withholding.batchCalculate({ items });
+        if (res && res.code === 0) {
+          const summary = res.data.summary;
+          if (summary.failed > 0) {
+            const failResults = (res.data.results || []).filter(r => !r.success);
+            const failDetails = failResults.map(r => `第${r.index + 1}条: ${r.error}`).join('<br/>');
+            await this._showBatchPartialDialog(summary.success, summary.failed, failDetails);
+          } else {
+            ElementPlus.ElMessage.success(`批量执行成功：${summary.success} 条`);
+          }
+          this.loadList();
+          this.loadStats();
+          if (summary.failed === 0) {
+            this.batchDialogVisible = false;
+          }
+        } else {
+          const msg = res && res.message ? res.message : '批量执行失败';
+          await this._showBatchFailureDialog(msg, true);
+        }
+      } catch (e) {
+        const msg = '执行异常：' + (e.message || '网络错误');
+        await this._showBatchFailureDialog(msg, true);
+      } finally {
+        this.batchLoading = false;
+      }
+    },
+    async _showBatchFailureDialog(msg, rolledBack) {
+      const rollbackTip = rolledBack
+        ? '<div style="color: #e6a23c; margin-top: 8px; font-size: 13px;"><strong>✓ 系统已自动回滚</strong>，未产生任何预扣明细和资金流水记录，数据安全。</div>'
+        : '';
+      try {
+        await ElementPlus.ElMessageBox.alert(
+          `<div style="line-height: 1.6;">
+            <div style="color: #f56c6c; font-size: 14px; font-weight: 600;">${msg}</div>
+            ${rollbackTip}
+          </div>`,
+          '批量提交失败',
+          {
+            dangerouslyUseHTMLString: true,
+            confirmButtonText: '关闭',
+            showCancelButton: true,
+            cancelButtonText: '重试',
+            type: 'error',
+          }
+        );
+      } catch (action) {
+        if (action === 'cancel') {
+          const items = [];
+          for (let i = 0; i < this.batchItems.length; i++) {
+            const it = this.batchItems[i];
+            let variables = {};
+            try { variables = JSON.parse(it.variablesJson); } catch (e) {}
+            items.push({
+              formula_code: it.formula_code, variables,
+              order_no: it.order_no || null, operator: 'admin',
+              initial_status: it.initial_status,
+            });
+          }
+          this._doBatchExecute(items);
+        }
+      }
+    },
+    async _showBatchPartialDialog(success, failed, failDetails) {
+      try {
+        await ElementPlus.ElMessageBox.alert(
+          `<div style="line-height: 1.6;">
+            <div style="color: #e6a23c; font-size: 14px; font-weight: 600;">批量执行部分失败</div>
+            <div style="margin-top: 8px; font-size: 13px;">成功：<strong style="color: #67c23a;">${success}</strong> 条，失败：<strong style="color: #f56c6c;">${failed}</strong> 条</div>
+            <div style="margin-top: 10px; padding: 10px; background: #fef0f0; border-radius: 4px; font-size: 12px; color: #f56c6c; max-height: 160px; overflow-y: auto;">${failDetails}</div>
+            <div style="color: #e6a23c; margin-top: 8px; font-size: 13px;"><strong>✓ 失败条目已自动回滚</strong>，成功条目已正常写入。</div>
+          </div>`,
+          '批量执行结果',
+          {
+            dangerouslyUseHTMLString: true,
+            confirmButtonText: '知道了',
+            type: 'warning',
+          }
+        );
+      } catch (e) {}
     },
     async showDetail(row) {
       try {
@@ -730,6 +835,7 @@ const WithholdingView = {
     async doStatusChange() {
       if (!this.selectedRow || this.statusForm.status === null) return;
       this.statusChanging = true;
+      const oldStatus = this.selectedRow.status;
       try {
         const res = await api.withholding.changeStatus(this.selectedRow.id, {
           status: this.statusForm.status,
@@ -739,10 +845,10 @@ const WithholdingView = {
         if (res && res.code === 0) {
           ElementPlus.ElMessage.success('状态变更成功');
           this.statusDialogVisible = false;
-          this.loadList();
-          this.loadStats();
+          await this.loadList();
+          await this.loadStats();
           if (this.detailDrawerVisible) {
-            this.showDetail(this.selectedRow);
+            await this.showDetail(this.selectedRow);
           }
         } else {
           ElementPlus.ElMessage.error(res && res.message ? res.message : '状态变更失败');
@@ -752,6 +858,24 @@ const WithholdingView = {
       } finally {
         this.statusChanging = false;
       }
+    },
+    closeStatusDialog() {
+      this.statusDialogVisible = false;
+      this.statusForm = { status: null, operator: 'admin', remark: '' };
+      this.statusChangeImpact = '';
+    },
+    closeRemarkDialog() {
+      this.remarkDialogVisible = false;
+      this.remarkForm = { remark: '', operator: 'admin' };
+    },
+    closeBatchDialog() {
+      this.batchDialogVisible = false;
+      this.batchItems = [];
+    },
+    closeDetailDrawer() {
+      this.detailDrawerVisible = false;
+      this.detailData = null;
+      this.selectedRow = null;
     },
     openRemarkDialog(row) {
       this.selectedRow = row;
@@ -769,9 +893,9 @@ const WithholdingView = {
         if (res && res.code === 0) {
           ElementPlus.ElMessage.success('备注添加成功');
           this.remarkDialogVisible = false;
-          this.loadList();
+          await this.loadList();
           if (this.detailDrawerVisible) {
-            this.showDetail(this.selectedRow);
+            await this.showDetail(this.selectedRow);
           }
         } else {
           ElementPlus.ElMessage.error(res && res.message ? res.message : '备注添加失败');

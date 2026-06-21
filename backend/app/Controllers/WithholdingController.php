@@ -139,7 +139,7 @@ class WithholdingController
 
             return $this->router->success($result, '计算成功');
         } catch (\Exception $e) {
-            return $this->router->error('计算失败: ' . $e->getMessage(), null, null, [
+            return $this->router->error('计算失败: ' . $e->getMessage(), 1, 400, [
                 'rolled_back' => true,
                 'error_detail' => $e->getMessage()
             ]);
