@@ -632,27 +632,32 @@ const WithholdingView = {
         } else {
           const msg = res && res.message ? res.message : '执行失败';
           const rolledBack = res && res.data && res.data.rolled_back;
+          const errorCode = res && res.data && res.data.error_code ? res.data.error_code : '';
           const errorDetail = res && res.data && res.data.error_detail ? res.data.error_detail : msg;
-          await this._showCalcFailureDialog(msg, rolledBack, errorDetail);
+          await this._showCalcFailureDialog(msg, rolledBack, errorCode, errorDetail);
         }
       } catch (e) {
         const msg = '执行异常：' + (e.message || '网络错误');
-        await this._showCalcFailureDialog(msg, true, e.message || '网络错误');
+        await this._showCalcFailureDialog(msg, true, 'NETWORK_ERROR', e.message || '网络错误');
       } finally {
         this.calcLoading = false;
       }
     },
-    async _showCalcFailureDialog(msg, rolledBack, errorDetail) {
+    async _showCalcFailureDialog(msg, rolledBack, errorCode, errorDetail) {
       const rollbackTip = rolledBack
         ? '<div style="color: #e6a23c; margin-top: 8px; font-size: 13px;"><strong>✓ 系统已自动回滚</strong>，未产生任何预扣明细和资金流水记录，数据安全。</div>'
         : '';
-      const errorHtml = errorDetail
+      const codeTip = errorCode
+        ? `<div style="margin-top: 6px; font-size: 12px; color: #909399;">错误代码：${errorCode}</div>`
+        : '';
+      const errorHtml = errorDetail && errorDetail !== msg
         ? `<div style="margin-top: 12px; padding: 10px; background: #fef0f0; border-radius: 4px; font-size: 12px; color: #f56c6c; font-family: monospace;">错误详情：${errorDetail}</div>`
         : '';
       try {
         await ElementPlus.ElMessageBox.alert(
           `<div style="line-height: 1.6;">
             <div style="color: #f56c6c; font-size: 14px; font-weight: 600;">${msg}</div>
+            ${codeTip}
             ${rollbackTip}
             ${errorHtml}
           </div>`,
@@ -741,24 +746,35 @@ const WithholdingView = {
           }
         } else {
           const msg = res && res.message ? res.message : '批量执行失败';
-          await this._showBatchFailureDialog(msg, true);
+          const rolledBack = res && res.data && res.data.rolled_back;
+          const errorCode = res && res.data && res.data.error_code ? res.data.error_code : '';
+          const errorDetail = res && res.data && res.data.error_detail ? res.data.error_detail : msg;
+          await this._showBatchFailureDialog(msg, rolledBack, errorCode, errorDetail);
         }
       } catch (e) {
         const msg = '执行异常：' + (e.message || '网络错误');
-        await this._showBatchFailureDialog(msg, true);
+        await this._showBatchFailureDialog(msg, true, 'NETWORK_ERROR', e.message || '网络错误');
       } finally {
         this.batchLoading = false;
       }
     },
-    async _showBatchFailureDialog(msg, rolledBack) {
+    async _showBatchFailureDialog(msg, rolledBack, errorCode, errorDetail) {
       const rollbackTip = rolledBack
         ? '<div style="color: #e6a23c; margin-top: 8px; font-size: 13px;"><strong>✓ 系统已自动回滚</strong>，未产生任何预扣明细和资金流水记录，数据安全。</div>'
+        : '';
+      const codeTip = errorCode
+        ? `<div style="margin-top: 6px; font-size: 12px; color: #909399;">错误代码：${errorCode}</div>`
+        : '';
+      const detailHtml = errorDetail && errorDetail !== msg
+        ? `<div style="margin-top: 10px; padding: 10px; background: #fef0f0; border-radius: 4px; font-size: 12px; color: #f56c6c; font-family: monospace; max-height: 120px; overflow-y: auto;">错误详情：${errorDetail}</div>`
         : '';
       try {
         await ElementPlus.ElMessageBox.alert(
           `<div style="line-height: 1.6;">
             <div style="color: #f56c6c; font-size: 14px; font-weight: 600;">${msg}</div>
+            ${codeTip}
             ${rollbackTip}
+            ${detailHtml}
           </div>`,
           '批量提交失败',
           {
@@ -857,10 +873,15 @@ const WithholdingView = {
             await this.showDetail(this.selectedRow);
           }
         } else {
-          ElementPlus.ElMessage.error(res && res.message ? res.message : '状态变更失败');
+          const msg = res && res.message ? res.message : '状态变更失败';
+          const rolledBack = res && res.data && res.data.rolled_back;
+          const errorCode = res && res.data && res.data.error_code ? res.data.error_code : '';
+          const errorDetail = res && res.data && res.data.error_detail ? res.data.error_detail : msg;
+          await this._showWriteFailureDialog('状态变更失败', msg, rolledBack, errorCode, errorDetail);
         }
       } catch (e) {
-        ElementPlus.ElMessage.error('状态变更异常：' + (e.message || '网络错误'));
+        const msg = '状态变更异常：' + (e.message || '网络错误');
+        await this._showWriteFailureDialog('状态变更失败', msg, true, 'NETWORK_ERROR', e.message || '网络错误');
       } finally {
         this.statusChanging = false;
       }
@@ -904,13 +925,41 @@ const WithholdingView = {
             await this.showDetail(this.selectedRow);
           }
         } else {
-          ElementPlus.ElMessage.error(res && res.message ? res.message : '备注添加失败');
+          const msg = res && res.message ? res.message : '备注添加失败';
+          const rolledBack = res && res.data && res.data.rolled_back;
+          const errorCode = res && res.data && res.data.error_code ? res.data.error_code : '';
+          const errorDetail = res && res.data && res.data.error_detail ? res.data.error_detail : msg;
+          await this._showWriteFailureDialog('备注添加失败', msg, rolledBack, errorCode, errorDetail);
         }
       } catch (e) {
-        ElementPlus.ElMessage.error('备注添加异常：' + (e.message || '网络错误'));
+        const msg = '备注添加异常：' + (e.message || '网络错误');
+        await this._showWriteFailureDialog('备注添加失败', msg, true, 'NETWORK_ERROR', e.message || '网络错误');
       } finally {
         this.remarkAdding = false;
       }
+    },
+    async _showWriteFailureDialog(title, msg, rolledBack, errorCode, errorDetail) {
+      const rollbackTip = rolledBack
+        ? '<div style="color: #e6a23c; margin-top: 8px; font-size: 13px;"><strong>✓ 系统已自动回滚</strong>，数据安全。</div>'
+        : '';
+      const codeTip = errorCode
+        ? `<div style="margin-top: 6px; font-size: 12px; color: #909399;">错误代码：${errorCode}</div>`
+        : '';
+      const detailHtml = errorDetail && errorDetail !== msg
+        ? `<div style="margin-top: 10px; padding: 10px; background: #fef0f0; border-radius: 4px; font-size: 12px; color: #f56c6c; font-family: monospace; max-height: 120px; overflow-y: auto;">错误详情：${errorDetail}</div>`
+        : '';
+      try {
+        await ElementPlus.ElMessageBox.alert(
+          `<div style="line-height: 1.6;">
+            <div style="color: #f56c6c; font-size: 14px; font-weight: 600;">${msg}</div>
+            ${codeTip}
+            ${rollbackTip}
+            ${detailHtml}
+          </div>`,
+          title,
+          { dangerouslyUseHTMLString: true, confirmButtonText: '关闭', type: 'error' }
+        );
+      } catch (e) {}
     },
     formatMoney(v) {
       return Number(v || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

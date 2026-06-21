@@ -274,4 +274,296 @@ class StatusFlowTest extends TestCase
             'rate' => 0.1
         ], ['record' => true]);
 
-        $detailId =
+        $detailId = $calcResult['detail_id'];
+
+        $flows = $this->fundFlowModel->findByWithholdingDetailId($detailId);
+        $this->assertEqual(FundFlow::STATUS_COMPLETED, (int)$flows[0]['status'], '初始流水状态为已完成');
+
+        $beforeBalance = (float)$flows[0]['balance'];
+
+        $db = $this->detailModel->getDb();
+        $db->beginTransaction();
+
+        try {
+            $relatedFlows = $this->fundFlowModel->findByWithholdingDetailId($detailId);
+            $totalBalanceAdjust = 0;
+            $updatedFlowIds = [];
+            $flowTargetStatus = FundFlow::STATUS_REVERSED;
+
+            foreach ($relatedFlows as $flow) {
+                $flowId = (int)$flow['id'];
+                $flowOldStatus = (int)$flow['status'];
+
+                if (!$this->fundFlowModel->canTransitionTo($flowOldStatus, $flowTargetStatus)) {
+                    continue;
+                }
+
+                $flowAmount = (float)$flow['amount'];
+                $flowDirection = (int)$flow['direction'];
+                $flowBalanceAdjust = 0;
+
+                if ($flowOldStatus === FundFlow::STATUS_COMPLETED && $flowTargetStatus !== FundFlow::STATUS_COMPLETED) {
+                    $flowBalanceAdjust = $flowDirection === FundFlow::DIRECTION_IN ? -$flowAmount : $flowAmount;
+                }
+
+                $this->fundFlowModel->update($flowId, ['status' => $flowTargetStatus]);
+                $totalBalanceAdjust += $flowBalanceAdjust;
+                $updatedFlowIds[] = $flowId;
+            }
+
+            if ($totalBalanceAdjust !== 0.0 && !empty($updatedFlowIds)) {
+                $minUpdatedId = min($updatedFlowIds);
+                $adjustSql = "UPDATE fund_flows SET balance = balance + ? WHERE id > ?";
+                $db->query($adjustSql, [round($totalBalanceAdjust, 2), $minUpdatedId]);
+            }
+
+            $this->detailModel->update($detailId, ['status' => WithholdingDetail::STATUS_REVERSED]);
+            $db->commit();
+        } catch (\Exception $e) {
+            $db->rollBack();
+            throw $e;
+        }
+
+        $updatedDetail = $this->detailModel->find($detailId);
+        $this->assertEqual(WithholdingDetail::STATUS_REVERSED, (int)$updatedDetail['status'], '预扣明细转为已冲正');
+
+        $updatedFlows = $this->fundFlowModel->findByWithholdingDetailId($detailId);
+        $this->assertEqual(FundFlow::STATUS_REVERSED, (int)$updatedFlows[0]['status'], '关联流水同步转为已冲正');
+    }
+
+    public function testDetailStatusTransitionCompletedToSettled()
+    {
+        $calcResult = $this->calculator->calculate('ORDER_AMOUNT_RATE', [
+            'order_amount' => 1000,
+            'rate' => 0.05
+        ], ['record' => true]);
+
+        $detailId = $calcResult['detail_id'];
+
+        $flowsBefore = $this->fundFlowModel->findByWithholdingDetailId($detailId);
+        $beforeFlowStatus = (int)$flowsBefore[0]['status'];
+
+        $db = $this->detailModel->getDb();
+        $db->beginTransaction();
+
+        try {
+            $relatedFlows = $this->fundFlowModel->findByWithholdingDetailId($detailId);
+            $flowTargetStatus = FundFlow::STATUS_COMPLETED;
+
+            foreach ($relatedFlows as $flow) {
+                $flowId = (int)$flow['id'];
+                $flowOldStatus = (int)$flow['status'];
+
+                if ($flowOldStatus === $flowTargetStatus) {
+                    continue;
+                }
+
+                if (!$this->fundFlowModel->canTransitionTo($flowOldStatus, $flowTargetStatus)) {
+                    continue;
+                }
+
+                $this->fundFlowModel->update($flowId, ['status' => $flowTargetStatus]);
+            }
+
+            $this->detailModel->update($detailId, ['status' => WithholdingDetail::STATUS_SETTLED]);
+            $db->commit();
+        } catch (\Exception $e) {
+            $db->rollBack();
+            throw $e;
+        }
+
+        $updatedDetail = $this->detailModel->find($detailId);
+        $this->assertEqual(WithholdingDetail::STATUS_SETTLED, (int)$updatedDetail['status'], '预扣明细转为已结算');
+
+        $updatedFlows = $this->fundFlowModel->findByWithholdingDetailId($detailId);
+        $this->assertEqual(FundFlow::STATUS_COMPLETED, (int)$updatedFlows[0]['status'], '已完成状态的流水在明细结算时保持已完成');
+    }
+
+    public function testDetailStatusTransitionPendingToCancelled()
+    {
+        $calcResult = $this->calculator->calculate('ORDER_AMOUNT_RATE', [
+            'order_amount' => 1000,
+            'rate' => 0.1
+        ], [
+            'record' => true,
+            'initial_status' => WithholdingDetail::STATUS_PENDING
+        ]);
+
+        $detailId = $calcResult['detail_id'];
+        $beforeBalance = $this->fundFlowModel->getLatestBalance();
+
+        $db = $this->detailModel->getDb();
+        $db->beginTransaction();
+
+        try {
+            $relatedFlows = $this->fundFlowModel->findByWithholdingDetailId($detailId);
+            $flowTargetStatus = FundFlow::STATUS_CANCELLED;
+
+            foreach ($relatedFlows as $flow) {
+                $flowId = (int)$flow['id'];
+                $flowOldStatus = (int)$flow['status'];
+
+                if (!$this->fundFlowModel->canTransitionTo($flowOldStatus, $flowTargetStatus)) {
+                    continue;
+                }
+
+                $this->fundFlowModel->update($flowId, ['status' => $flowTargetStatus]);
+            }
+
+            $this->detailModel->update($detailId, ['status' => WithholdingDetail::STATUS_CANCELLED]);
+            $db->commit();
+        } catch (\Exception $e) {
+            $db->rollBack();
+            throw $e;
+        }
+
+        $updatedDetail = $this->detailModel->find($detailId);
+        $this->assertEqual(WithholdingDetail::STATUS_CANCELLED, (int)$updatedDetail['status'], '预扣明细转为已取消');
+
+        $updatedFlows = $this->fundFlowModel->findByWithholdingDetailId($detailId);
+        $this->assertEqual(FundFlow::STATUS_CANCELLED, (int)$updatedFlows[0]['status'], '关联流水同步转为已取消');
+
+        $afterBalance = $this->fundFlowModel->getLatestBalance();
+        $this->assertEqual((float)$beforeBalance, (float)$afterBalance, '取消待处理预扣不影响余额');
+    }
+
+    public function testFundFlowBalanceOnMultipleCompletedFlows()
+    {
+        $this->fundFlowModel->create([
+            'flow_no' => $this->fundFlowModel->generateFlowNo(),
+            'flow_type' => FundFlow::TYPE_SETTLEMENT,
+            'direction' => FundFlow::DIRECTION_IN,
+            'amount' => 1000.0,
+            'balance' => 1000.0,
+            'currency' => 'CNY',
+            'status' => FundFlow::STATUS_COMPLETED
+        ]);
+
+        $balanceAfterInflow = $this->fundFlowModel->getLatestBalance();
+        $this->assertEqual(1000.0, (float)$balanceAfterInflow, '流入1000后余额为1000');
+
+        $this->fundFlowModel->create([
+            'flow_no' => $this->fundFlowModel->generateFlowNo(),
+            'flow_type' => FundFlow::TYPE_WITHHOLD,
+            'direction' => FundFlow::DIRECTION_OUT,
+            'amount' => 200.0,
+            'balance' => 800.0,
+            'currency' => 'CNY',
+            'status' => FundFlow::STATUS_COMPLETED
+        ]);
+
+        $balanceAfterOutflow = $this->fundFlowModel->getLatestBalance();
+        $this->assertEqual(800.0, (float)$balanceAfterOutflow, '流出200后余额为800');
+    }
+
+    public function testOperationLogCreatedOnStatusChange()
+    {
+        $flowId = $this->fundFlowModel->create([
+            'flow_no' => $this->fundFlowModel->generateFlowNo(),
+            'flow_type' => FundFlow::TYPE_WITHHOLD,
+            'direction' => FundFlow::DIRECTION_OUT,
+            'amount' => 50.0,
+            'balance' => -50.0,
+            'currency' => 'CNY',
+            'status' => FundFlow::STATUS_COMPLETED
+        ]);
+
+        $logsBefore = $this->operationLog->getByTarget(OperationLog::TARGET_FUND_FLOW, $flowId);
+        $beforeCount = count($logsBefore);
+
+        $this->operationLog->logStatusChange(
+            OperationLog::TARGET_FUND_FLOW,
+            $flowId,
+            FundFlow::STATUS_COMPLETED,
+            FundFlow::STATUS_REVERSED,
+            '已冲正',
+            ['operator' => 'tester', 'remark' => '测试冲正']
+        );
+
+        $logsAfter = $this->operationLog->getByTarget(OperationLog::TARGET_FUND_FLOW, $flowId);
+        $afterCount = count($logsAfter);
+
+        $this->assertEqual($beforeCount + 1, $afterCount, '状态变更后操作日志增加1条');
+
+        $latestLog = $logsAfter[0];
+        $this->assertEqual(OperationLog::ACTION_STATUS_CHANGE, $latestLog['action'], '日志动作为状态变更');
+        $this->assertEqual('tester', $latestLog['operator'], '操作人正确');
+    }
+
+    public function testCannotTransitionToSameStatus()
+    {
+        $this->assertFalse($this->fundFlowModel->canTransitionTo(FundFlow::STATUS_COMPLETED, FundFlow::STATUS_COMPLETED), '不可转为相同状态');
+        $this->assertFalse($this->detailModel->canTransitionTo(WithholdingDetail::STATUS_PENDING, WithholdingDetail::STATUS_PENDING), '不可转为相同状态');
+    }
+
+    public function testTerminalStatusCannotTransition()
+    {
+        $this->assertEqual(0, count(array_filter(
+            [FundFlow::STATUS_COMPLETED, FundFlow::STATUS_PENDING, FundFlow::STATUS_FAILED, FundFlow::STATUS_CANCELLED, FundFlow::STATUS_REVERSED],
+            function ($status) {
+                return $this->fundFlowModel->canTransitionTo(FundFlow::STATUS_CANCELLED, $status);
+            }
+        )), '已取消为资金流水终态，不能再转换');
+
+        $this->assertEqual(0, count(array_filter(
+            [FundFlow::STATUS_COMPLETED, FundFlow::STATUS_PENDING, FundFlow::STATUS_FAILED, FundFlow::STATUS_CANCELLED, FundFlow::STATUS_REVERSED],
+            function ($status) {
+                return $this->fundFlowModel->canTransitionTo(FundFlow::STATUS_REVERSED, $status);
+            }
+        )), '已冲正为资金流水终态，不能再转换');
+
+        $this->assertEqual(0, count(array_filter(
+            [WithholdingDetail::STATUS_COMPLETED, WithholdingDetail::STATUS_PENDING, WithholdingDetail::STATUS_FAILED,
+                WithholdingDetail::STATUS_CANCELLED, WithholdingDetail::STATUS_REVERSED, WithholdingDetail::STATUS_SETTLED],
+            function ($status) {
+                return $this->detailModel->canTransitionTo(WithholdingDetail::STATUS_CANCELLED, $status);
+            }
+        )), '已取消为预扣明细终态，不能再转换');
+
+        $this->assertEqual(0, count(array_filter(
+            [WithholdingDetail::STATUS_COMPLETED, WithholdingDetail::STATUS_PENDING, WithholdingDetail::STATUS_FAILED,
+                WithholdingDetail::STATUS_CANCELLED, WithholdingDetail::STATUS_REVERSED, WithholdingDetail::STATUS_SETTLED],
+            function ($status) {
+                return $this->detailModel->canTransitionTo(WithholdingDetail::STATUS_REVERSED, $status);
+            }
+        )), '已冲正为预扣明细终态，不能再转换');
+    }
+
+    public function testFullLifecyclePendingCompletedSettledReversed()
+    {
+        $calcResult = $this->calculator->calculate('FIXED_PLUS_RATE', [
+            'fixed_fee' => 10,
+            'order_amount' => 500,
+            'rate' => 0.02
+        ], [
+            'record' => true,
+            'initial_status' => WithholdingDetail::STATUS_PENDING,
+            'order_no' => 'LIFECYCLE-001'
+        ]);
+
+        $detailId = $calcResult['detail_id'];
+        $detail = $this->detailModel->find($detailId);
+        $this->assertEqual(WithholdingDetail::STATUS_PENDING, (int)$detail['status'], '生命周期1: 初始待处理');
+
+        $flows = $this->fundFlowModel->findByWithholdingDetailId($detailId);
+        $this->assertEqual(FundFlow::STATUS_PENDING, (int)$flows[0]['status'], '流水也是待处理');
+
+        $this->detailModel->update($detailId, ['status' => WithholdingDetail::STATUS_COMPLETED]);
+        $this->fundFlowModel->update($flows[0]['id'], ['status' => FundFlow::STATUS_COMPLETED]);
+
+        $detail = $this->detailModel->find($detailId);
+        $this->assertEqual(WithholdingDetail::STATUS_COMPLETED, (int)$detail['status'], '生命周期2: 已完成');
+
+        $this->detailModel->update($detailId, ['status' => WithholdingDetail::STATUS_SETTLED]);
+        $detail = $this->detailModel->find($detailId);
+        $this->assertEqual(WithholdingDetail::STATUS_SETTLED, (int)$detail['status'], '生命周期3: 已结算');
+
+        $this->detailModel->update($detailId, ['status' => WithholdingDetail::STATUS_REVERSED]);
+        $this->fundFlowModel->update($flows[0]['id'], ['status' => FundFlow::STATUS_REVERSED]);
+
+        $detail = $this->detailModel->find($detailId);
+        $flows = $this->fundFlowModel->findByWithholdingDetailId($detailId);
+        $this->assertEqual(WithholdingDetail::STATUS_REVERSED, (int)$detail['status'], '生命周期4: 已冲正（最终状态）');
+        $this->assertEqual(FundFlow::STATUS_REVERSED, (int)$flows[0]['status'], '流水同步已冲正');
+    }
+}
