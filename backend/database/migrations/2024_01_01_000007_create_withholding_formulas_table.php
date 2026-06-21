@@ -42,7 +42,7 @@ class CreateWithholdingFormulasTable
             [
                 'name' => '阶梯式预扣',
                 'code' => 'STEP_WITHHOLDING',
-                'formula' => 'order_amount <= 1000 ? order_amount * 0.03 : order_amount <= 5000 ? order_amount * 0.05 : order_amount * 0.08',
+                'formula' => 'order_amount <= 1000 ? order_amount * 0.03 : (order_amount <= 5000 ? order_amount * 0.05 : order_amount * 0.08)',
                 'description' => '根据订单金额区间采用不同比例预扣',
                 'variables' => json_encode([
                     ['name' => 'order_amount', 'label' => '订单金额', 'type' => 'number', 'default' => 0]

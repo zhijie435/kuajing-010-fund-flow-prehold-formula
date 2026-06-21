@@ -29,7 +29,12 @@ class FundFlow extends Model
 
     public function generateFlowNo(): string
     {
-        return 'FF' . date('YmdHis') . rand(1000, 9999);
+        $config = require __DIR__ . '/../../config/config.php';
+        if (!is_array($config)) {
+            $config = require __DIR__ . '/../../config/config.php';
+        }
+        $prefix = $config['fund_flow']['flow_no_prefix'] ?? 'FF';
+        return $prefix . date('YmdHis') . rand(1000, 9999);
     }
 
     public function getLatestBalance(): float

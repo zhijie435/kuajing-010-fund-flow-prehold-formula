@@ -15,6 +15,7 @@ class FundFlowController
     private $calculator;
     private $router;
     private $operationLog;
+    private $config;
 
     public function __construct()
     {
@@ -22,6 +23,7 @@ class FundFlowController
         $this->calculator = new WithholdingCalculator();
         $this->router = new Router();
         $this->operationLog = new OperationLog();
+        $this->config = require __DIR__ . '/../../config/config.php';
     }
 
     private function enrichFlow($flow)

@@ -12,12 +12,14 @@ class WithholdingCalculator
     private $formulaModel;
     private $detailModel;
     private $fundFlowModel;
+    private $config;
 
     public function __construct()
     {
         $this->formulaModel = new WithholdingFormula();
         $this->detailModel = new WithholdingDetail();
         $this->fundFlowModel = new FundFlow();
+        $this->config = require __DIR__ . '/../../config/config.php';
     }
 
     public function calculate(string $formulaCode, array $variables, array $options = []): array
@@ -37,11 +39,13 @@ class WithholdingCalculator
 
         $result = $this->evaluateFormula($formula['formula'], $processedVariables);
 
-        if ($result < 0) {
+        $allowNegative = $this->config['withholding']['allow_negative_result'] ?? false;
+        if (!$allowNegative && $result < 0) {
             throw FormulaException::negativeResult($result);
         }
 
         $shouldRecord = $options['record'] ?? true;
+        $autoCreateFundFlow = $this->config['withholding']['auto_create_fund_flow'] ?? true;
         $detailId = null;
 
         if ($shouldRecord) {
@@ -54,9 +58,11 @@ class WithholdingCalculator
                     throw FormulaException::recordFailed('预扣明细创建返回无效ID');
                 }
 
-                $flowId = $this->recordFundFlow($formula, $result, $detailId, $options);
-                if ($flowId <= 0) {
-                    throw FormulaException::recordFailed('资金流水创建返回无效ID');
+                if ($autoCreateFundFlow) {
+                    $flowId = $this->recordFundFlow($formula, $result, $detailId, $options);
+                    if ($flowId <= 0) {
+                        throw FormulaException::recordFailed('资金流水创建返回无效ID');
+                    }
                 }
 
                 $db->commit();
@@ -66,13 +72,14 @@ class WithholdingCalculator
             }
         }
 
+        $precision = $this->config['withholding']['precision'] ?? 2;
         return [
             'formula_id' => $formula['id'],
             'formula_code' => $formula['code'],
             'formula_name' => $formula['name'],
             'formula' => $formula['formula'],
             'variables' => $processedVariables,
-            'result' => round($result, 2),
+            'result' => round($result, $precision),
             'detail_id' => $detailId,
             'calculated_at' => date('Y-m-d H:i:s')
         ];
@@ -164,13 +171,15 @@ class WithholdingCalculator
             throw FormulaException::unsafe();
         }
 
+        $normalizedFormula = $this->normalizeNestedTernary($formula);
+
         $expression = preg_replace_callback('/\b([a-zA-Z_][a-zA-Z0-9_]*)\b/', function($matches) use ($variables) {
             $varName = $matches[1];
             if (array_key_exists($varName, $variables)) {
                 return (float)$variables[$varName];
             }
             throw FormulaException::evaluationError("未定义变量: {$varName}");
-        }, $formula);
+        }, $normalizedFormula);
 
         $result = $this->safeEval($expression);
 
@@ -213,6 +222,89 @@ class WithholdingCalculator
         return (float)$result;
     }
 
+    private function normalizeNestedTernary(string $formula): string
+    {
+        $ternaryCount = substr_count($formula, '?');
+        if ($ternaryCount <= 1) {
+            return $formula;
+        }
+
+        $openParens = substr_count($formula, '(');
+        $closeParens = substr_count($formula, ')');
+        if ($openParens >= $ternaryCount - 1 && $closeParens >= $ternaryCount - 1) {
+            return $formula;
+        }
+
+        return $this->addTernaryParentheses($formula);
+    }
+
+    private function addTernaryParentheses(string $expr): string
+    {
+        $chars = str_split($expr);
+        $len = count($chars);
+        $depth = 0;
+        $result = '';
+        $questionPositions = [];
+        $colonPositions = [];
+
+        for ($i = 0; $i < $len; $i++) {
+            $c = $chars[$i];
+            if ($c === '(') $depth++;
+            if ($c === ')') $depth--;
+            if ($depth === 0 && $c === '?') $questionPositions[] = $i;
+            if ($depth === 0 && $c === ':') $colonPositions[] = $i;
+        }
+
+        if (count($questionPositions) <= 1) {
+            return $expr;
+        }
+
+        $result = $expr;
+        for ($i = count($questionPositions) - 1; $i >= 1; $i--) {
+            $qPos = $questionPositions[$i];
+            $prevColonIdx = -1;
+            foreach ($colonPositions as $cp) {
+                if ($cp < $qPos) {
+                    $prevColonIdx = $cp;
+                } else {
+                    break;
+                }
+            }
+
+            if ($prevColonIdx >= 0) {
+                $before = substr($result, 0, $prevColonIdx + 1);
+                $after = substr($result, $prevColonIdx + 1);
+                $result = $before . '(' . trim($after) . ')';
+
+                $questionPositions = array_map(function($pos) use ($prevColonIdx) {
+                    return $pos > $prevColonIdx ? $pos + 1 : $pos;
+                }, $questionPositions);
+                $colonPositions = array_map(function($pos) use ($prevColonIdx) {
+                    return $pos > $prevColonIdx ? $pos + 1 : $pos;
+                }, $colonPositions);
+            }
+        }
+
+        return $result;
+    }
+
+    private function balanceParentheses(string $expr): string
+    {
+        $questionCount = substr_count($expr, '?');
+        $colonCount = substr_count($expr, ':');
+        $openParens = substr_count($expr, '(');
+        $closeParens = substr_count($expr, ')');
+
+        if ($questionCount > $closeParens) {
+            $needed = $questionCount - $closeParens;
+            for ($i = 0; $i < $needed; $i++) {
+                $expr .= ' )';
+            }
+        }
+
+        return $expr;
+    }
+
     private function checkFormulaSecurity(string $formula): bool
     {
         $dangerousPatterns = [
@@ -249,7 +341,10 @@ class WithholdingCalculator
 
     private function recordDetail(array $formula, array $variables, float $result, array $options): int
     {
-        $initialStatus = $options['initial_status'] ?? WithholdingDetail::STATUS_COMPLETED;
+        $defaultInitialStatus = $this->config['withholding']['default_initial_status'] ?? WithholdingDetail::STATUS_COMPLETED;
+        $defaultOperator = $this->config['withholding']['default_operator'] ?? 'system';
+        $precision = $this->config['withholding']['precision'] ?? 2;
+        $initialStatus = $options['initial_status'] ?? $defaultInitialStatus;
 
         $detailData = [
             'formula_id' => $formula['id'],
@@ -257,11 +352,11 @@ class WithholdingCalculator
             'formula_name' => $formula['name'],
             'formula' => $formula['formula'],
             'variables' => json_encode($variables, JSON_UNESCAPED_UNICODE),
-            'result' => round($result, 2),
+            'result' => round($result, $precision),
             'order_no' => $options['order_no'] ?? null,
             'related_type' => $options['related_type'] ?? null,
             'related_id' => $options['related_id'] ?? null,
-            'operator' => $options['operator'] ?? 'system',
+            'operator' => $options['operator'] ?? $defaultOperator,
             'remark' => $options['remark'] ?? null,
             'status' => $initialStatus
         ];
@@ -271,28 +366,32 @@ class WithholdingCalculator
 
     private function recordFundFlow(array $formula, float $result, int $detailId, array $options): int
     {
-        $initialStatus = $options['initial_status'] ?? FundFlow::STATUS_COMPLETED;
+        $defaultInitialStatus = $this->config['withholding']['default_initial_status'] ?? FundFlow::STATUS_COMPLETED;
+        $defaultOperator = $this->config['withholding']['default_operator'] ?? 'system';
+        $defaultCurrency = $this->config['fund_flow']['default_currency'] ?? 'CNY';
+        $precision = $this->config['withholding']['precision'] ?? 2;
+        $initialStatus = $options['initial_status'] ?? $defaultInitialStatus;
 
         $latestBalance = $this->fundFlowModel->getLatestBalance();
 
         if ($initialStatus === FundFlow::STATUS_COMPLETED) {
-            $newBalance = round($latestBalance - $result, 2);
+            $newBalance = round($latestBalance - $result, $precision);
         } else {
-            $newBalance = round($latestBalance, 2);
+            $newBalance = round($latestBalance, $precision);
         }
 
         $flowData = [
             'flow_no' => $this->fundFlowModel->generateFlowNo(),
             'flow_type' => FundFlow::TYPE_WITHHOLD,
             'direction' => FundFlow::DIRECTION_OUT,
-            'amount' => round($result, 2),
-            'balance' => round($newBalance, 2),
-            'currency' => 'CNY',
+            'amount' => round($result, $precision),
+            'balance' => $newBalance,
+            'currency' => $defaultCurrency,
             'related_type' => $options['related_type'] ?? null,
             'related_id' => $options['related_id'] ?? null,
             'withholding_detail_id' => $detailId,
             'order_no' => $options['order_no'] ?? null,
-            'operator' => $options['operator'] ?? 'system',
+            'operator' => $options['operator'] ?? $defaultOperator,
             'remark' => $options['remark'] ?? ('预扣: ' . $formula['name']),
             'status' => $initialStatus
         ];
