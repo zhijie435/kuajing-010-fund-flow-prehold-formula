@@ -230,6 +230,8 @@ class WithholdingCalculator
 
     private function recordDetail(array $formula, array $variables, float $result, array $options): int
     {
+        $initialStatus = $options['initial_status'] ?? WithholdingDetail::STATUS_COMPLETED;
+        
         $detailData = [
             'formula_id' => $formula['id'],
             'formula_code' => $formula['code'],
@@ -242,7 +244,7 @@ class WithholdingCalculator
             'related_id' => $options['related_id'] ?? null,
             'operator' => $options['operator'] ?? 'system',
             'remark' => $options['remark'] ?? null,
-            'status' => 1
+            'status' => $initialStatus
         ];
         
         return $this->detailModel->create($detailData);
@@ -250,8 +252,15 @@ class WithholdingCalculator
 
     private function recordFundFlow(array $formula, float $result, int $detailId, array $options): int
     {
+        $initialStatus = $options['initial_status'] ?? FundFlow::STATUS_COMPLETED;
+        
         $latestBalance = $this->fundFlowModel->getLatestBalance();
-        $newBalance = $latestBalance - $result;
+        
+        if ($initialStatus === FundFlow::STATUS_COMPLETED) {
+            $newBalance = $latestBalance - $result;
+        } else {
+            $newBalance = $latestBalance;
+        }
         
         $flowData = [
             'flow_no' => $this->fundFlowModel->generateFlowNo(),
@@ -266,7 +275,7 @@ class WithholdingCalculator
             'order_no' => $options['order_no'] ?? null,
             'operator' => $options['operator'] ?? 'system',
             'remark' => $options['remark'] ?? ('预扣: ' . $formula['name']),
-            'status' => 1
+            'status' => $initialStatus
         ];
         
         return $this->fundFlowModel->create($flowData);

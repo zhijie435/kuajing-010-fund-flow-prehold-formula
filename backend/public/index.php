@@ -32,12 +32,19 @@ $router->post('/api/withholding/calculate', [WithholdingController::class, 'calc
 $router->post('/api/withholding/preview', [WithholdingController::class, 'preview']);
 $router->post('/api/withholding/batch-calculate', [WithholdingController::class, 'batchCalculate']);
 $router->get('/api/withholding/details', [WithholdingController::class, 'details']);
+$router->get('/api/withholding/details/status-types', [WithholdingController::class, 'statusTypes']);
 $router->get('/api/withholding/details/{id}', [WithholdingController::class, 'detail']);
+$router->get('/api/withholding/details/{id}/logs', [WithholdingController::class, 'operationLogs']);
+$router->put('/api/withholding/details/{id}/status', [WithholdingController::class, 'changeStatus']);
+$router->put('/api/withholding/details/{id}/remark', [WithholdingController::class, 'addRemark']);
 
 $router->get('/api/fund-flows', [FundFlowController::class, 'index']);
 $router->get('/api/fund-flows/types', [FundFlowController::class, 'types']);
 $router->get('/api/fund-flows/stats', [FundFlowController::class, 'stats']);
 $router->get('/api/fund-flows/{id}', [FundFlowController::class, 'show']);
+$router->get('/api/fund-flows/{id}/logs', [FundFlowController::class, 'operationLogs']);
 $router->post('/api/fund-flows', [FundFlowController::class, 'store']);
+$router->put('/api/fund-flows/{id}/status', [FundFlowController::class, 'changeStatus']);
+$router->put('/api/fund-flows/{id}/remark', [FundFlowController::class, 'addRemark']);
 
 $router->dispatch();

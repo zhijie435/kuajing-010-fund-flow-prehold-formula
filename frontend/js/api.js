@@ -63,6 +63,13 @@ const api = {
       return api.get(`/withholding/details${query ? '?' + query : ''}`);
     },
     detail(id) { return api.get(`/withholding/details/${id}`); },
+    logs(id, params = {}) {
+      const query = new URLSearchParams(params).toString();
+      return api.get(`/withholding/details/${id}/logs${query ? '?' + query : ''}`);
+    },
+    changeStatus(id, data) { return api.put(`/withholding/details/${id}/status`, data); },
+    addRemark(id, data) { return api.put(`/withholding/details/${id}/remark`, data); },
+    statusTypes() { return api.get('/withholding/details/status-types'); },
   },
 
   fundflow: {
@@ -77,5 +84,11 @@ const api = {
     },
     detail(id) { return api.get(`/fund-flows/${id}`); },
     create(data) { return api.post('/fund-flows', data); },
+    logs(id, params = {}) {
+      const query = new URLSearchParams(params).toString();
+      return api.get(`/fund-flows/${id}/logs${query ? '?' + query : ''}`);
+    },
+    changeStatus(id, data) { return api.put(`/fund-flows/${id}/status`, data); },
+    addRemark(id, data) { return api.put(`/fund-flows/${id}/remark`, data); },
   },
 };
