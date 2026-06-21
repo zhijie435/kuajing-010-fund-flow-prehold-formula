@@ -200,7 +200,10 @@ class WithholdingController
         $items = $input['items'] ?? [];
 
         if (!is_array($items) || empty($items)) {
-            return $this->router->error('批量计算数据不能为空');
+            return $this->router->error('批量计算数据不能为空', 1, 400, [
+                'error_code' => 'BATCH_ITEMS_EMPTY',
+                'error_detail' => 'items must be a non-empty array'
+            ]);
         }
 
         $results = [];
@@ -212,12 +215,34 @@ class WithholdingController
             foreach ($items as $index => $item) {
                 $formulaCode = $item['formula_code'] ?? '';
                 $variables = $item['variables'] ?? [];
+                $operator = $item['operator'] ?? '';
                 $initialStatus = (int)($item['initial_status'] ?? WithholdingDetail::STATUS_COMPLETED);
+
+                if (empty($formulaCode) || empty($operator)) {
+                    $results[] = [
+                        'index' => $index,
+                        'success' => false,
+                        'error' => empty($formulaCode) ? '公式编码不能为空' : '操作人不能为空',
+                        'error_code' => empty($formulaCode) ? 'FORMULA_CODE_EMPTY' : 'OPERATOR_EMPTY'
+                    ];
+                    continue;
+                }
+
+                if (!is_array($variables)) {
+                    $results[] = [
+                        'index' => $index,
+                        'success' => false,
+                        'error' => '变量参数格式错误',
+                        'error_code' => 'VARIABLES_INVALID'
+                    ];
+                    continue;
+                }
+
                 $options = [
                     'order_no' => $item['order_no'] ?? null,
                     'related_type' => $item['related_type'] ?? null,
                     'related_id' => $item['related_id'] ?? null,
-                    'operator' => $item['operator'] ?? 'admin',
+                    'operator' => $operator,
                     'remark' => $item['remark'] ?? null,
                     'record' => true,
                     'initial_status' => $initialStatus
@@ -253,7 +278,8 @@ class WithholdingController
                     $results[] = [
                         'index' => $index,
                         'success' => false,
-                        'error' => $e->getMessage()
+                        'error' => $e->getMessage(),
+                        'error_code' => 'CALCULATE_EXCEPTION'
                     ];
                 }
             }
@@ -274,7 +300,11 @@ class WithholdingController
 
         } catch (\Exception $e) {
             $db->rollBack();
-            return $this->router->error('批量计算失败: ' . $e->getMessage());
+            return $this->router->error('批量计算失败: ' . $e->getMessage(), 1, 400, [
+                'rolled_back' => true,
+                'error_code' => 'BATCH_TRANSACTION_EXCEPTION',
+                'error_detail' => $e->getMessage()
+            ]);
         }
     }
 
@@ -357,18 +387,27 @@ class WithholdingController
 
         $detail = $this->detailModel->find($id);
         if (!$detail) {
-            return $this->router->error('预扣明细不存在', 404, 404);
+            return $this->router->error('预扣明细不存在', 404, 404, [
+                'error_code' => 'NOT_FOUND',
+                'error_detail' => 'withholding detail not found'
+            ]);
         }
 
         $oldStatus = (int)$detail['status'];
         if ($oldStatus === $newStatus) {
-            return $this->router->error('状态未发生变化', null, 400);
+            return $this->router->error('状态未发生变化', 2, 400, [
+                'error_code' => 'STATUS_UNCHANGED',
+                'error_detail' => 'new status equals old status'
+            ]);
         }
 
         if (!$this->detailModel->canTransitionTo($oldStatus, $newStatus)) {
             $oldLabel = $this->detailModel->getStatusLabel($oldStatus);
             $newLabel = $this->detailModel->getStatusLabel($newStatus);
-            return $this->router->error("不允许从[{$oldLabel}]变更为[{$newLabel}]", null, 400);
+            return $this->router->error("不允许从[{$oldLabel}]变更为[{$newLabel}]", 3, 400, [
+                'error_code' => 'STATUS_TRANSITION_FORBIDDEN',
+                'error_detail' => "cannot transition from status {$oldStatus} to {$newStatus}"
+            ]);
         }
 
         $db = $this->detailModel->getDb();
