@@ -139,7 +139,10 @@ class WithholdingController
 
             return $this->router->success($result, '计算成功');
         } catch (\Exception $e) {
-            return $this->router->error('计算失败: ' . $e->getMessage());
+            return $this->router->error('计算失败: ' . $e->getMessage(), null, null, [
+                'rolled_back' => true,
+                'error_detail' => $e->getMessage()
+            ]);
         }
     }
 
@@ -355,32 +358,48 @@ class WithholdingController
 
             $originalLatestBalance = $this->fundFlowModel->getLatestBalance();
 
+            $flowTargetStatus = $newStatus;
+            if ($newStatus === WithholdingDetail::STATUS_SETTLED) {
+                $flowTargetStatus = FundFlow::STATUS_COMPLETED;
+            }
+
             foreach ($relatedFlows as $flow) {
                 $flowId = (int)$flow['id'];
                 $flowOldStatus = (int)$flow['status'];
+
+                if ($flowOldStatus === $flowTargetStatus) {
+                    continue;
+                }
+
+                if (!$this->fundFlowModel->canTransitionTo($flowOldStatus, $flowTargetStatus)) {
+                    continue;
+                }
+
                 $flowAmount = (float)$flow['amount'];
                 $flowDirection = (int)$flow['direction'];
                 $flowBalanceAdjust = 0;
 
-                if ($flowOldStatus === FundFlow::STATUS_COMPLETED && $newStatus !== FundFlow::STATUS_COMPLETED) {
+                if ($flowOldStatus === FundFlow::STATUS_COMPLETED && $flowTargetStatus !== FundFlow::STATUS_COMPLETED) {
                     $flowBalanceAdjust = $flowDirection === FundFlow::DIRECTION_IN ? -$flowAmount : $flowAmount;
-                } elseif ($flowOldStatus !== FundFlow::STATUS_COMPLETED && $newStatus === FundFlow::STATUS_COMPLETED) {
+                } elseif ($flowOldStatus !== FundFlow::STATUS_COMPLETED && $flowTargetStatus === FundFlow::STATUS_COMPLETED) {
                     $flowBalanceAdjust = $flowDirection === FundFlow::DIRECTION_IN ? $flowAmount : -$flowAmount;
                 }
 
-                $this->fundFlowModel->update($flowId, ['status' => $newStatus]);
+                $this->fundFlowModel->update($flowId, ['status' => $flowTargetStatus]);
 
                 $this->operationLog->logStatusChange(
                     OperationLog::TARGET_FUND_FLOW,
                     $flowId,
                     $flowOldStatus,
-                    $newStatus,
-                    $this->fundFlowModel->getStatusLabel($newStatus),
+                    $flowTargetStatus,
+                    $this->fundFlowModel->getStatusLabel($flowTargetStatus),
                     [
                         'operator' => $operator,
                         'remark' => '关联预扣明细状态变更同步',
                         'extra' => [
                             'withholding_detail_id' => $id,
+                            'withholding_detail_new_status' => $newStatus,
+                            'withholding_detail_new_status_label' => $this->detailModel->getStatusLabel($newStatus),
                             'balance_adjust' => round($flowBalanceAdjust, 2)
                         ]
                     ]
@@ -425,7 +444,10 @@ class WithholdingController
                 'id' => $id,
                 'status' => $newStatus,
                 'status_label' => $newStatusLabel,
+                'flow_target_status' => $flowTargetStatus,
+                'flow_target_status_label' => $this->fundFlowModel->getStatusLabel($flowTargetStatus),
                 'total_balance_adjusted' => round($totalBalanceAdjust, 2),
+                'related_flows_count' => count($relatedFlows),
                 'related_flows_updated' => count($updatedFlowIds),
                 'detail' => $updatedDetail,
                 'fund_flows' => $updatedFlows
